@@ -21,49 +21,60 @@ pub fn render(template: &EnvFile, merged: &Merged<String>) -> String {
     let mut out = String::new();
     for line in &template.lines {
         match line {
-            Line::Verbatim(raw) => out.push_str(raw),
-            Line::Entry(entry) => push_with_final_value(&mut out, entry, merged),
+            Line::Verbatim(raw) => {
+                out.push_str(raw);
+            }
+            Line::Entry(entry) => {
+                // Merging reads the template first, so this is always set.
+                let Some(text) = merged.get(&entry.key) else {
+                    out.push_str(&entry.raw);
+                    continue;
+                };
+                push_with_final_value(&mut out, entry, text);
+            }
             Line::Commented {
                 space_after_hash,
                 entry,
-            } => match merged.get(&entry.key) {
-                None => {}
-                Some(_) if placed.contains(&entry.key) => {
+            } => {
+                let Some(text) = merged.get(&entry.key) else {
+                    // Nothing sets it: the optional line is left out.
+                    continue;
+                };
+                if placed.contains(&entry.key) {
+                    // Already active elsewhere: the comment stays a comment.
                     out.push_str(if *space_after_hash { "# " } else { "#" });
                     out.push_str(&entry.raw);
+                    continue;
                 }
-                Some(_) => {
-                    placed.insert(&entry.key);
-                    push_with_final_value(&mut out, entry, merged);
-                }
-            },
+                placed.insert(&entry.key);
+                push_with_final_value(&mut out, entry, text);
+            }
         }
     }
-    let mut extra = merged
-        .iter()
-        .filter(|(key, _)| !placed.contains(key))
-        .peekable();
-    if extra.peek().is_some() && !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    for (key, value) in extra {
-        push_entry(&mut out, key, value);
+    for (key, text) in merged.iter() {
+        if placed.contains(key) {
+            continue;
+        }
+        // A template whose last line has no newline: start on a fresh line.
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        push_entry(&mut out, key, text);
     }
     out
 }
 
-/// `entry`'s line with its value replaced by the final one. It stays
-/// untouched only when it holds no reference and already says that value: a
-/// `${...}` line is always rewritten with what it expanded to.
-fn push_with_final_value(out: &mut String, entry: &Entry, merged: &Merged<String>) {
-    let final_text = merged.get(&entry.key).map(String::as_str);
-    if final_text.is_none() || entry.value.as_literal() == final_text {
+/// `entry`'s line with its value replaced by `final_text`. It stays untouched
+/// only when it holds no reference and already says that value: a `${...}`
+/// line is always rewritten with what it expanded to.
+fn push_with_final_value(out: &mut String, entry: &Entry, final_text: &str) {
+    if entry.value.as_literal() == Some(final_text) {
         out.push_str(&entry.raw);
-    } else if let Some(text) = final_text {
-        out.push_str(&entry.raw[..entry.span.start]);
-        write_literal(text, out);
-        out.push_str(&entry.raw[entry.span.end..]);
+        return;
     }
+    out.push_str(&entry.raw[..entry.span.start]);
+    write_literal(final_text, out);
+    out.push_str(&entry.raw[entry.span.end..]);
 }
 
 fn push_entry(out: &mut String, key: &Key, text: &str) {

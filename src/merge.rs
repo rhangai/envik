@@ -42,7 +42,9 @@ impl<V> Merged<V> {
     /// Later calls win; the first call fixes the key's position.
     pub fn set(&mut self, key: &Key, value: V) {
         match self.values.get_mut(key) {
-            Some(slot) => *slot = value,
+            Some(slot) => {
+                *slot = value;
+            }
             None => {
                 self.order.push(key.clone());
                 self.values.insert(key.clone(), value);

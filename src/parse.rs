@@ -102,16 +102,17 @@ pub fn parse(src: &str, origin: &Path) -> Result<EnvFile, Vec<ParseError>> {
 
 fn parse_line(raw: &str) -> Result<Line, ParseErrorKind> {
     let trimmed = raw.trim_start();
-    if trimmed.is_empty() || trimmed.starts_with('#') {
-        return Ok(match commented_entry(raw) {
-            Some((space_after_hash, entry)) => Line::Commented {
-                space_after_hash,
-                entry,
-            },
-            None => Line::Verbatim(raw.to_owned()),
-        });
+    let is_text = trimmed.is_empty() || trimmed.starts_with('#');
+    if !is_text {
+        return parse_entry(raw).map(Line::Entry);
     }
-    parse_entry(raw).map(Line::Entry)
+    let Some((space_after_hash, entry)) = commented_entry(raw) else {
+        return Ok(Line::Verbatim(raw.to_owned()));
+    };
+    Ok(Line::Commented {
+        space_after_hash,
+        entry,
+    })
 }
 
 fn parse_entry(raw: &str) -> Result<Entry, ParseErrorKind> {
@@ -141,10 +142,15 @@ fn commented_entry(raw: &str) -> Option<(bool, Entry)> {
         None => (false, after_hash),
     };
     let (name, _) = rest.split_once('=')?;
-    Key::new(name)?;
-    parse_entry(rest)
-        .ok()
-        .map(|entry| (space_after_hash, entry))
+    // The name must touch `#`/`# ` and `=`: `# KEY = x` is prose.
+    if !Key::is_valid(name) {
+        return None;
+    }
+    // A value that does not parse makes it prose too, not an error.
+    let Ok(entry) = parse_entry(rest) else {
+        return None;
+    };
+    Some((space_after_hash, entry))
 }
 
 #[cfg(test)]

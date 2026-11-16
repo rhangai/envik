@@ -61,7 +61,7 @@ struct GenerateArgs {
     seed_env: Option<Key>,
 }
 
-/// `--seed-env` value parser: a name `std::env::var_os` accepts.
+/// `--seed-env` value parser, and the key of every `-e`.
 fn parse_env_name(arg: &str) -> Result<Key, String> {
     Key::new(arg).ok_or_else(|| format!("invalid variable name `{arg}`"))
 }
@@ -77,15 +77,10 @@ enum Override {
 /// `-e` value parser: checks the key here so a bad name is a usage error
 /// reported by clap, before any file is read.
 fn parse_override(arg: &str) -> Result<Override, String> {
-    let (name, value) = match arg.split_once('=') {
-        Some((name, value)) => (name, Some(value)),
-        None => (arg, None),
-    };
-    let key = Key::new(name).ok_or_else(|| format!("invalid variable name `{name}`"))?;
-    Ok(match value {
-        Some(value) => Override::Literal(key, value.to_owned()),
-        None => Override::FromEnv(key),
-    })
+    match arg.split_once('=') {
+        Some((name, value)) => Ok(Override::Literal(parse_env_name(name)?, value.to_owned())),
+        None => Ok(Override::FromEnv(parse_env_name(arg)?)),
+    }
 }
 
 fn main() -> ExitCode {
@@ -149,10 +144,16 @@ fn generate(args: &GenerateArgs) -> Result<(), CliError> {
         .zip(&inputs.contents)
         .map(|(origin, contents)| Source { origin, contents })
         .collect();
-    let out = envik::generate(&sources, &inputs.overrides, inputs.seed.as_ref())?;
+    let seed = inputs.seed.as_ref().map(|input| &input.seed);
+    let out = envik::generate(&sources, &inputs.overrides, seed)?;
     // Before the output: a written .env must never rely on a seed that was
     // not saved.
-    if let Some((path, text)) = &inputs.seed_to_create {
+    if let Some(SeedInput {
+        text,
+        create_at: Some(path),
+        ..
+    }) = &inputs.seed
+    {
         create_seed_file(path, text).map_err(|source| CliError::Write {
             path: path.clone(),
             source,
@@ -177,14 +178,11 @@ struct Inputs {
     contents: Vec<String>,
     /// One per `-e`, in the same order, `-e KEY` already looked up.
     overrides: Vec<(Key, String)>,
-    seed: Option<Seed>,
-    /// A `--seed-file` that did not exist, with the seed made for it: written
-    /// only once the generation has succeeded.
-    seed_to_create: Option<(PathBuf, String)>,
+    seed: Option<SeedInput>,
 }
 
-/// Reads every `-i` file and looks up every `-e KEY`; on failure, returns
-/// every reason an input could not be read.
+/// Reads every `-i` file, looks up every `-e KEY` and reads the seed; on
+/// failure, returns every reason an input could not be read.
 fn read_inputs(args: &GenerateArgs) -> Result<Inputs, Vec<InputError>> {
     let mut errors = Vec::new();
     let mut contents = Vec::with_capacity(args.input.len());
@@ -199,86 +197,96 @@ fn read_inputs(args: &GenerateArgs) -> Result<Inputs, Vec<InputError>> {
     }
     let mut overrides = Vec::with_capacity(args.env.len());
     for item in &args.env {
-        match item {
-            Override::Literal(key, value) => overrides.push((key.clone(), value.clone())),
-            Override::FromEnv(key) => match env::var_os(key.as_str()) {
-                None => errors.push(InputError::EnvMissing(key.clone())),
-                Some(value) => match value.into_string() {
-                    Ok(value) => overrides.push((key.clone(), value)),
-                    Err(_) => errors.push(InputError::EnvNotUtf8(key.clone())),
-                },
-            },
+        match read_override(item) {
+            Ok(value) => overrides.push(value),
+            Err(error) => errors.push(error),
         }
     }
-    let (seed_text, seed_to_create) = read_seed(args, &mut errors);
-    let seed = seed_text.and_then(|text| {
-        let seed = Seed::new(text.as_bytes());
-        if seed.is_none() {
-            errors.push(InputError::EmptySeed);
+    let seed = match read_seed(args) {
+        Ok(seed) => seed,
+        Err(error) => {
+            errors.push(error);
+            None
         }
-        seed
-    });
-    if errors.is_empty() {
-        Ok(Inputs {
-            contents,
-            overrides,
-            seed,
-            seed_to_create,
-        })
-    } else {
-        Err(errors)
+    };
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(Inputs {
+        contents,
+        overrides,
+        seed,
+    })
+}
+
+/// One `-e`, with `-e KEY` looked up in the environment.
+fn read_override(item: &Override) -> Result<(Key, String), InputError> {
+    match item {
+        Override::Literal(key, value) => Ok((key.clone(), value.clone())),
+        Override::FromEnv(key) => Ok((key.clone(), read_env(key)?)),
     }
 }
 
-/// The seed text from whichever of `--seed-value`, `--seed-env` or
-/// `--seed-file` was given (at most one), and the file to create when
-/// `--seed-file-create` had to make one up. Failures go to `errors`.
-fn read_seed(
-    args: &GenerateArgs,
-    errors: &mut Vec<InputError>,
-) -> (Option<String>, Option<(PathBuf, String)>) {
-    if let Some(text) = &args.seed_value {
-        return (Some(text.clone()), None);
-    }
-    if let Some(name) = &args.seed_env {
-        let text = match env::var_os(name.as_str()).map(|value| value.into_string()) {
-            None => {
-                errors.push(InputError::EnvMissing(name.clone()));
-                None
-            }
-            Some(Err(_)) => {
-                errors.push(InputError::EnvNotUtf8(name.clone()));
-                None
-            }
-            Some(Ok(text)) => Some(text),
-        };
-        return (text, None);
-    }
-    let Some(path) = &args.seed_file else {
-        return (None, None);
+/// `key` from the process environment.
+fn read_env(key: &Key) -> Result<String, InputError> {
+    let Some(value) = env::var_os(key.as_str()) else {
+        return Err(InputError::EnvMissing(key.clone()));
     };
+    value
+        .into_string()
+        .map_err(|_| InputError::EnvNotUtf8(key.clone()))
+}
+
+/// The seed, and where it came from.
+struct SeedInput {
+    seed: Seed,
+    /// What `seed` was made from, to write to `create_at`.
+    text: String,
+    /// A `--seed-file` that did not exist: written with `text` only once the
+    /// generation has succeeded.
+    create_at: Option<PathBuf>,
+}
+
+/// The seed from whichever of `--seed-value`, `--seed-env` or `--seed-file`
+/// was given (at most one); `None` when none was.
+fn read_seed(args: &GenerateArgs) -> Result<Option<SeedInput>, InputError> {
+    let (text, create_at) = if let Some(text) = &args.seed_value {
+        (text.clone(), None)
+    } else if let Some(name) = &args.seed_env {
+        (read_env(name)?, None)
+    } else if let Some(path) = &args.seed_file {
+        read_seed_file(path, args.seed_file_create)?
+    } else {
+        return Ok(None);
+    };
+    let Some(seed) = Seed::new(text.as_bytes()) else {
+        return Err(InputError::EmptySeed);
+    };
+    Ok(Some(SeedInput {
+        seed,
+        text,
+        create_at,
+    }))
+}
+
+/// `path`'s seed; or, when it does not exist and `create` is set, a new one
+/// to write there once the generation succeeds.
+fn read_seed_file(path: &Path, create: bool) -> Result<(String, Option<PathBuf>), InputError> {
     match fs::read_to_string(path) {
         Ok(text) => {
+            // The newline an editor or `echo` adds is not part of the seed.
             let text = text.strip_suffix('\n').unwrap_or(&text);
             let text = text.strip_suffix('\r').unwrap_or(text);
-            (Some(text.to_owned()), None)
+            Ok((text.to_owned(), None))
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound && args.seed_file_create => {
-            match envik::new_seed_text() {
-                Ok(text) => (Some(text.clone()), Some((path.clone(), text))),
-                Err(error) => {
-                    errors.push(InputError::Random(error));
-                    (None, None)
-                }
-            }
+        Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
+            let text = envik::new_seed_text().map_err(InputError::Random)?;
+            Ok((text, Some(path.to_owned())))
         }
-        Err(source) => {
-            errors.push(InputError::Read {
-                path: path.clone(),
-                source,
-            });
-            (None, None)
-        }
+        Err(source) => Err(InputError::Read {
+            path: path.to_owned(),
+            source,
+        }),
     }
 }
 
@@ -315,16 +323,25 @@ fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),
     };
-    let result = (|| {
-        let mut file = fs::File::create(&tmp)?;
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions)?;
-        }
-        file.write_all(contents.as_bytes())?;
-        fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
+    if let Err(error) = write_then_rename(&tmp, path, permissions, contents) {
+        // Leave no temporary file behind; the write error is what matters.
         let _ = fs::remove_file(&tmp);
+        return Err(error);
     }
-    result
+    Ok(())
+}
+
+/// Writes `contents` to `tmp` with `permissions`, then moves it over `path`.
+fn write_then_rename(
+    tmp: &Path,
+    path: &Path,
+    permissions: Option<fs::Permissions>,
+    contents: &str,
+) -> io::Result<()> {
+    let mut file = fs::File::create(tmp)?;
+    if let Some(permissions) = permissions {
+        file.set_permissions(permissions)?;
+    }
+    file.write_all(contents.as_bytes())?;
+    fs::rename(tmp, path)
 }

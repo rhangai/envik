@@ -144,30 +144,24 @@ pub enum ValueError {
 /// quotes included, so a caller can replace it and keep the rest of the line.
 pub fn read(rest: &str) -> Result<(Value, Range<usize>), ValueError> {
     let start = rest.len() - rest.trim_start().len();
-    match rest[start..].chars().next() {
-        Some(quote @ ('"' | '\'')) => {
-            let body = &rest[start + 1..];
-            let (value, len) = if quote == '"' {
-                read_double_quoted(body)?
-            } else {
-                read_single_quoted(body)?
-            };
-            let end = start + 1 + len;
-            check_after_quote(&rest[end..])?;
-            Ok((value, start..end))
-        }
-        _ => {
-            let span = unquoted_span(rest);
-            Ok((read_unquoted(&rest[span.clone()])?, span))
-        }
-    }
+    let value_text = &rest[start..];
+    let (value, len) = if let Some(body) = value_text.strip_prefix('"') {
+        read_double_quoted(body)?
+    } else if let Some(body) = value_text.strip_prefix('\'') {
+        read_single_quoted(body)?
+    } else {
+        let span = unquoted_span(rest);
+        return Ok((read_unquoted(&rest[span.clone()])?, span));
+    };
+    let end = start + 1 + len;
+    check_after_quote(&rest[end..])?;
+    Ok((value, start..end))
 }
 
 /// Where an unquoted value lies in `rest`: leading blanks skipped, ends before
 /// trailing blanks or a `#` that follows a blank. An empty value sits at the
 /// very start, so a new one is not glued to a `#`.
 fn unquoted_span(rest: &str) -> Range<usize> {
-    let start = 0;
     let leading = rest.len() - rest.trim_start().len();
     let body = &rest[leading..];
     let mut end = body.len();
@@ -181,9 +175,9 @@ fn unquoted_span(rest: &str) -> Range<usize> {
     }
     let value_len = body[..end].trim_end().len();
     if value_len == 0 {
-        return start..start;
+        return 0..0;
     }
-    start + leading..start + leading + value_len
+    leading..leading + value_len
 }
 
 /// Unquoted: everything literal except `${...}`; no escapes.
@@ -191,7 +185,9 @@ fn read_unquoted(text: &str) -> Result<Value, ValueError> {
     let mut value = Value::default();
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
-        if c == '$' && chars.clone().next() == Some('{') {
+        // What follows `c`.
+        let after = chars.as_str();
+        if c == '$' && after.starts_with('{') {
             chars.next();
             value.push_placeholder(read_ref(&mut chars, false)?);
         } else {
@@ -214,14 +210,22 @@ fn read_double_quoted(body: &str) -> Result<(Value, usize), ValueError> {
     let mut value = Value::default();
     let mut chars = body.chars();
     while let Some(c) = chars.next() {
+        // What follows `c`.
+        let after = chars.as_str();
         match c {
-            '"' => return Ok((value, body.len() - chars.as_str().len())),
-            '\\' => value.push_char(unescape(chars.next())?),
-            '$' if chars.clone().next() == Some('{') => {
+            '"' => {
+                return Ok((value, body.len() - after.len()));
+            }
+            '\\' => {
+                value.push_char(unescape(chars.next())?);
+            }
+            '$' if after.starts_with('{') => {
                 chars.next();
                 value.push_placeholder(read_ref(&mut chars, true)?);
             }
-            _ => value.push_char(c),
+            _ => {
+                value.push_char(c);
+            }
         }
     }
     Err(ValueError::UnclosedQuote)
@@ -243,15 +247,17 @@ fn unescape(next: Option<char>) -> Result<char, ValueError> {
 fn read_ref(chars: &mut std::str::Chars<'_>, quoted: bool) -> Result<Part, ValueError> {
     let mut text = String::new();
     loop {
-        match chars.next() {
-            None => return Err(ValueError::UnclosedRef),
-            Some('}') => break,
-            Some('"') if quoted => return Err(ValueError::UnclosedRef),
-            Some('\\') if quoted => text.push(unescape(chars.next())?),
-            Some('$') if chars.clone().next() == Some('{') => {
-                return Err(ValueError::NestedRef);
-            }
-            Some(c) => text.push(c),
+        let Some(c) = chars.next() else {
+            return Err(ValueError::UnclosedRef);
+        };
+        // What follows `c`.
+        let after = chars.as_str();
+        match c {
+            '}' => break,
+            '"' if quoted => return Err(ValueError::UnclosedRef),
+            '\\' if quoted => text.push(unescape(chars.next())?),
+            '$' if after.starts_with('{') => return Err(ValueError::NestedRef),
+            _ => text.push(c),
         }
     }
     let (name, default) = match text.split_once(":-") {

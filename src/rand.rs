@@ -26,7 +26,11 @@ impl std::fmt::Debug for Seed {
 impl Seed {
     /// `None` when `bytes` is empty.
     pub fn new(bytes: &[u8]) -> Option<Self> {
-        (!bytes.is_empty()).then(|| Seed {
+        // An empty seed would make every secret guessable.
+        if bytes.is_empty() {
+            return None;
+        }
+        Some(Seed {
             key: blake3::derive_key(CONTEXT, bytes),
         })
     }
@@ -36,23 +40,29 @@ impl Seed {
     /// order, never change it.
     pub fn rand(&self, key: &Key, index: usize, len: usize) -> String {
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
-        // Length-prefixed fields, so no two inputs hash the same bytes.
-        for field in [
-            key.as_str().as_bytes(),
-            &(index as u64).to_le_bytes(),
-            b"rand",
-            &(len as u64).to_le_bytes(),
-        ] {
-            hasher.update(&(field.len() as u64).to_le_bytes());
-            hasher.update(field);
-        }
+        update_field(&mut hasher, key.as_str().as_bytes());
+        update_field(&mut hasher, &(index as u64).to_le_bytes());
+        update_field(&mut hasher, b"rand");
+        update_field(&mut hasher, &(len as u64).to_le_bytes());
         let mut bytes = vec![0; len];
         hasher.finalize_xof().fill(&mut bytes);
-        bytes
-            .iter()
-            .map(|byte| char::from(ALPHABET[usize::from(byte & 63)]))
-            .collect()
+        to_alphabet(&bytes)
     }
+}
+
+/// Feeds `field` after its length, so ("ab", "c") and ("a", "bc") never hash
+/// the same bytes.
+fn update_field(hasher: &mut blake3::Hasher, field: &[u8]) {
+    hasher.update(&(field.len() as u64).to_le_bytes());
+    hasher.update(field);
+}
+
+/// One [`ALPHABET`] character per byte.
+fn to_alphabet(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| char::from(ALPHABET[usize::from(byte & 63)]))
+        .collect()
 }
 
 /// A fresh seed text from the system's random source: 43 base64url
@@ -60,10 +70,7 @@ impl Seed {
 pub fn new_seed_text() -> Result<String, getrandom::Error> {
     let mut bytes = [0; 43];
     getrandom::fill(&mut bytes)?;
-    Ok(bytes
-        .iter()
-        .map(|byte| char::from(ALPHABET[usize::from(byte & 63)]))
-        .collect())
+    Ok(to_alphabet(&bytes))
 }
 
 #[cfg(test)]
