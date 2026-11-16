@@ -55,8 +55,8 @@ pub fn interpolate(
         errors: Vec::new(),
     };
     let mut resolved = Merged::default();
-    for (key, _) in merged.iter() {
-        if let Some(text) = resolver.resolve(key) {
+    for (key, value) in merged.iter() {
+        if let Some(text) = resolver.resolve(key, value) {
             resolved.set(key, text);
         }
     }
@@ -85,72 +85,97 @@ struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     /// `key`'s expanded value, or `None` if it, or something it references,
-    /// failed. `key` must be set in `merged`.
-    fn resolve(&mut self, key: &'a Key) -> Option<String> {
+    /// failed. `value` is `key`'s value in `merged`.
+    fn resolve(&mut self, key: &'a Key, value: &'a Value) -> Option<String> {
         match self.state.get(key) {
-            Some(State::Done(text)) => return Some(text.clone()),
-            Some(State::Failed) => return None,
+            Some(State::Done(text)) => {
+                return Some(text.clone());
+            }
+            Some(State::Failed) => {
+                return None;
+            }
             Some(State::Visiting) => {
                 self.close_cycle(key);
                 return None;
             }
-            None => {}
+            None => {
+                // Not met yet: resolve it below.
+            }
         }
-        let merged = self.merged;
-        let value = merged.get(key)?;
         self.state.insert(key, State::Visiting);
         self.stack.push(key);
+        let text = self.expand_value(key, value);
+        self.stack.pop();
+        match text {
+            Some(text) => {
+                self.state.insert(key, State::Done(text.clone()));
+                Some(text)
+            }
+            None => {
+                self.state.insert(key, State::Failed);
+                None
+            }
+        }
+    }
+
+    /// `value`'s parts joined, with every reference expanded and every call
+    /// run; `None` if any of them failed. Keeps going after a failure, so
+    /// every error in the value is reported.
+    fn expand_value(&mut self, key: &'a Key, value: &'a Value) -> Option<String> {
         let mut text = String::new();
         let mut ok = true;
         let mut calls = 0;
+        let mut no_seed_reported = false;
         for part in value.parts() {
             match part {
-                Part::Literal(literal) => text.push_str(literal),
-                Part::Ref { name, default } => match self.expand(key, name, default.as_deref()) {
-                    Some(expanded) => text.push_str(&expanded),
-                    None => ok = false,
-                },
+                Part::Literal(literal) => {
+                    text.push_str(literal);
+                }
+                Part::Ref { name, default } => {
+                    let Some(expanded) = self.expand(key, name, default.as_deref()) else {
+                        ok = false;
+                        continue;
+                    };
+                    text.push_str(&expanded);
+                }
                 Part::Call(Call::Rand { len }) => {
-                    match self.seed {
-                        Some(seed) => text.push_str(&seed.rand(key, calls, *len)),
+                    let index = calls;
+                    calls += 1;
+                    let Some(seed) = self.seed else {
+                        ok = false;
                         // One error per key, however many calls it has.
-                        None if ok => {
+                        if !no_seed_reported {
                             self.errors
                                 .push(InterpolateError::NoSeed { key: key.clone() });
-                            ok = false;
+                            no_seed_reported = true;
                         }
-                        None => {}
-                    }
-                    calls += 1;
+                        continue;
+                    };
+                    text.push_str(&seed.rand(key, index, *len));
                 }
             }
         }
-        self.stack.pop();
-        // A cycle found below may have already marked `key` as failed.
-        if ok && matches!(self.state.get(key), Some(State::Visiting)) {
-            self.state.insert(key, State::Done(text.clone()));
-            Some(text)
-        } else {
-            self.state.insert(key, State::Failed);
-            None
+        if !ok {
+            return None;
         }
+        Some(text)
     }
 
     /// One `${name}` or `${name:-default}` inside `key`'s value.
     fn expand(&mut self, key: &Key, name: &'a Key, default: Option<&str>) -> Option<String> {
-        if self.merged.get(name).is_none() {
-            return match default {
-                Some(default) => Some(default.to_owned()),
-                None => {
-                    self.errors.push(InterpolateError::Missing {
-                        key: key.clone(),
-                        name: name.clone(),
-                    });
-                    None
-                }
-            };
-        }
-        let text = self.resolve(name)?;
+        let Some(value) = self.merged.get(name) else {
+            // Unset: the default, or an error.
+            if let Some(default) = default {
+                return Some(default.to_owned());
+            }
+            self.errors.push(InterpolateError::Missing {
+                key: key.clone(),
+                name: name.clone(),
+            });
+            return None;
+        };
+        let text = self.resolve(name, value)?;
+        // Empty counts as unset for `:-`, as in the shell.
         match default {
             Some(default) if text.is_empty() => Some(default.to_owned()),
             _ => Some(text),
@@ -164,10 +189,11 @@ impl<'a> Resolver<'a> {
             .stack
             .iter()
             .position(|on_path| *on_path == key)
-            .unwrap_or(0);
-        let mut chain: Vec<Key> = self.stack[start..].iter().map(|k| (*k).clone()).collect();
+            .expect("a key being visited is on the stack");
+        let cycle = &self.stack[start..];
+        let mut chain: Vec<Key> = cycle.iter().map(|member| (*member).clone()).collect();
         chain.push(key.clone());
-        for member in &self.stack[start..] {
+        for member in cycle {
             self.state.insert(member, State::Failed);
         }
         self.errors.push(InterpolateError::Cycle { chain });
