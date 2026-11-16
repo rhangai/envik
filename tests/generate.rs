@@ -185,10 +185,10 @@ fn quotes_only_when_needed() {
     );
     assert_eq!(
         String::from_utf8(run.stdout).unwrap(),
-        "MSG=\"a b\"\n\
+        "MSG='a b'\n\
          SIMPLE=abc\n\
          URL=postgres://user@db:5432/app\n\
-         PRICE=\"\\$5\"\n",
+         PRICE='$5'\n",
     );
     fs::remove_dir_all(&dir).unwrap();
 }
@@ -220,5 +220,80 @@ fn uncomments_commented_key() {
          HOST=x\n\
          VERBOSE=yes\n",
     );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn literal_values_never_expand() {
+    let dir = scratch("literal_values_never_expand");
+    let template = dir.join("template.env");
+    // `PORT`'s reference is to a missing key, but `-e` replaces it.
+    fs::write(&template, "LIT='${X}'\nPORT=${MISSING}\n").unwrap();
+
+    let run = envik(&[
+        "generate",
+        "-i",
+        path(&template),
+        "-e",
+        "VAR=123",
+        "-e",
+        "PORT=a${VAR}",
+    ]);
+
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        "LIT='${X}'\n\
+         PORT='a${VAR}'\n\
+         VAR=123\n",
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn interpolation_errors() {
+    let dir = scratch("interpolation_errors");
+    let template = dir.join("template.env");
+    let out = dir.join(".env");
+    let original = "KEEP=me\n# untouched\n";
+
+    let cases = [
+        ("A=${X}\n", "envik: `A`: `${X}` is not set\n"),
+        ("A=${B}\nB=${A}\n", "envik: circular reference: A → B → A\n"),
+        // `X` only references the cycle: no error of its own.
+        (
+            "X=${A}\nA=${B}\nB=${C}\nC=${A}\n",
+            "envik: circular reference: A → B → C → A\n",
+        ),
+        ("A=${A}\n", "envik: circular reference: A → A\n"),
+    ];
+    for (contents, expected) in cases {
+        fs::write(&template, contents).unwrap();
+        fs::write(&out, original).unwrap();
+
+        let run = envik(&["generate", "-i", path(&template), "-o", path(&out)]);
+
+        assert!(!run.status.success(), "{contents:?} succeeded");
+        assert_eq!(
+            String::from_utf8(run.stderr).unwrap(),
+            expected,
+            "{contents:?}"
+        );
+        assert_eq!(fs::read_to_string(&out).unwrap(), original, "{contents:?}");
+        let mut entries: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        entries.sort();
+        assert_eq!(
+            entries,
+            [".env", "template.env"],
+            "{contents:?} left files behind"
+        );
+    }
     fs::remove_dir_all(&dir).unwrap();
 }

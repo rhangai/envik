@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::key::Key;
 use crate::merge::Merged;
 use crate::parse::{Entry, EnvFile, Line};
-use crate::value::Value;
+use crate::value::write_literal;
 
 /// A line whose value did not change comes back byte for byte; a changed
 /// one has only its value replaced, keeping spacing and inline comment.
@@ -14,7 +14,7 @@ use crate::value::Value;
 /// A commented `# KEY=` line becomes active in place when some source sets
 /// `KEY` and the template has no active `KEY` line; only the first such line
 /// per key does. When nothing sets `KEY`, the line is dropped.
-pub fn render(template: &EnvFile, merged: &Merged) -> String {
+pub fn render(template: &EnvFile, merged: &Merged<String>) -> String {
     // Keys that already have their line: every active one, then each
     // commented one as it is turned on.
     let mut placed: HashSet<&Key> = template.entries().map(|(key, _)| key).collect();
@@ -52,23 +52,24 @@ pub fn render(template: &EnvFile, merged: &Merged) -> String {
     out
 }
 
-/// `entry`'s line with its value replaced by the final one, or untouched when
-/// they are equal.
-fn push_with_final_value(out: &mut String, entry: &Entry, merged: &Merged) {
-    let final_value = merged.get(&entry.key).unwrap_or(&entry.value);
-    if *final_value == entry.value {
+/// `entry`'s line with its value replaced by the final one. It stays
+/// untouched only when it holds no reference and already says that value: a
+/// `${...}` line is always rewritten with what it expanded to.
+fn push_with_final_value(out: &mut String, entry: &Entry, merged: &Merged<String>) {
+    let final_text = merged.get(&entry.key).map(String::as_str);
+    if final_text.is_none() || entry.value.as_literal() == final_text {
         out.push_str(&entry.raw);
-    } else {
+    } else if let Some(text) = final_text {
         out.push_str(&entry.raw[..entry.span.start]);
-        final_value.write_env(out);
+        write_literal(text, out);
         out.push_str(&entry.raw[entry.span.end..]);
     }
 }
 
-fn push_entry(out: &mut String, key: &Key, value: &Value) {
+fn push_entry(out: &mut String, key: &Key, text: &str) {
     out.push_str(key.as_str());
     out.push('=');
-    value.write_env(out);
+    write_literal(text, out);
     out.push('\n');
 }
 
@@ -92,7 +93,8 @@ mod tests {
             .iter()
             .map(|(key, value)| (Key::new(key).unwrap(), (*value).to_owned()))
             .collect();
-        render(&read(template), &merge(&files, &overrides))
+        let resolved = crate::interpolate::interpolate(&merge(&files, &overrides)).unwrap();
+        render(&read(template), &resolved)
     }
 
     #[test]

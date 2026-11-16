@@ -1,7 +1,7 @@
 //! A variable's value: how it is read after `=` ([`read`]), how it is held
 //! (literal text and `${...}` references kept apart, so expansion never has to
-//! re-read quotes or escapes), and how it is written back
-//! ([`Value::write_env`]). Reading what was written gives the same value.
+//! re-read quotes or escapes), and how an expanded value is written back
+//! ([`write_literal`]). Reading what was written gives the same text.
 
 use std::ops::Range;
 
@@ -30,6 +30,19 @@ impl Value {
         value
     }
 
+    pub fn parts(&self) -> &[Part] {
+        &self.0
+    }
+
+    /// The text, when the value holds no reference.
+    pub fn as_literal(&self) -> Option<&str> {
+        match self.0.as_slice() {
+            [] => Some(""),
+            [Part::Literal(text)] => Some(text),
+            _ => None,
+        }
+    }
+
     pub fn push_char(&mut self, c: char) {
         match self.0.last_mut() {
             Some(Part::Literal(text)) => text.push(c),
@@ -47,36 +60,25 @@ impl Value {
         }
     }
 
-    /// `default` must not hold `}`: [`Value::write_env`] could not write it
-    /// so that it reads back the same.
     pub fn push_ref(&mut self, name: Key, default: Option<String>) {
-        debug_assert!(
-            default.as_deref().is_none_or(|d| !d.contains('}')),
-            "a reference default cannot hold `}}`"
-        );
         self.0.push(Part::Ref { name, default });
     }
+}
 
-    /// Appends the value as it goes after `KEY=`, so that reading it back
-    /// gives the same value: bare when every character is safe unquoted,
-    /// otherwise in double quotes with `\`, `"`, `$` and newline escaped.
-    pub fn write_env(&self, out: &mut String) {
-        if self.0.iter().all(is_bare) {
-            for part in &self.0 {
-                match part {
-                    Part::Literal(text) => out.push_str(text),
-                    Part::Ref { name, default } => write_ref(out, name, default.as_deref(), false),
-                }
-            }
-            return;
-        }
+/// Appends `text` as it goes after `KEY=`, so that it reads back as the same
+/// literal: bare when every character is safe; otherwise in single quotes,
+/// where nothing is special; and in double quotes with escapes only when it
+/// holds a `'` or a newline, which single quotes cannot.
+pub fn write_literal(text: &str, out: &mut String) {
+    if text.chars().all(is_safe_bare) {
+        out.push_str(text);
+    } else if !text.contains(['\'', '\n']) {
+        out.push('\'');
+        out.push_str(text);
+        out.push('\'');
+    } else {
         out.push('"');
-        for part in &self.0 {
-            match part {
-                Part::Literal(text) => push_escaped(out, text),
-                Part::Ref { name, default } => write_ref(out, name, default.as_deref(), true),
-            }
-        }
+        push_escaped(out, text);
         out.push('"');
     }
 }
@@ -85,29 +87,6 @@ impl Value {
 /// neighbours: no blank, `#`, quote, `\` or `$`.
 fn is_safe_bare(c: char) -> bool {
     c.is_ascii_alphanumeric() || "_-./:@%+,=".contains(c)
-}
-
-fn is_bare(part: &Part) -> bool {
-    match part {
-        Part::Literal(text) => text.chars().all(is_safe_bare),
-        Part::Ref { default, .. } => default
-            .as_deref()
-            .is_none_or(|d| d.chars().all(is_safe_bare)),
-    }
-}
-
-fn write_ref(out: &mut String, name: &Key, default: Option<&str>, quoted: bool) {
-    out.push_str("${");
-    out.push_str(name.as_str());
-    if let Some(default) = default {
-        out.push_str(":-");
-        if quoted {
-            push_escaped(out, default);
-        } else {
-            out.push_str(default);
-        }
-    }
-    out.push('}');
 }
 
 fn push_escaped(out: &mut String, text: &str) {
@@ -326,9 +305,6 @@ mod tests {
 
         // Writing then reading back gives the same value, for every character
         // that needs quoting and for literal text that looks like a reference.
-        let mut with_ref = lit("http://");
-        with_ref.push_ref(Key::new("HOST").unwrap(), Some("a b$\"\\".to_owned()));
-        with_ref.push_str(" #x");
         let values = [
             lit(""),
             lit("plain"),
@@ -350,13 +326,12 @@ mod tests {
             lit("\n"),
             lit("tab\there"),
             lit("ação"),
-            with_ref,
         ];
         let back: Vec<Value> = values
             .iter()
             .map(|value| {
                 let mut written = String::new();
-                value.write_env(&mut written);
+                write_literal(value.as_literal().unwrap(), &mut written);
                 let (back, span) = read(&written).unwrap();
                 assert_eq!(span, 0..written.len(), "{written:?}");
                 back

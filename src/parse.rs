@@ -196,4 +196,16 @@ mod tests {
             ],
         );
     }
+
+    #[test]
+    fn bare_dollar_is_literal() {
+        assert_eq!(
+            read("A=$VAR\nB=\"$VAR\"\nC=a$VAR}b\n"),
+            [
+                entry("A", "$VAR"),
+                entry("B", "$VAR"),
+                entry("C", "a$VAR}b")
+            ],
+        );
+    }
 }

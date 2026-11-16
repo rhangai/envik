@@ -69,10 +69,37 @@ After a closing quote, only blanks or a blank and a `#` comment may follow.
 Anything else — `export KEY=...`, an unclosed quote, an unknown escape — is an
 error that names the file and line. Every invalid line is reported in one run.
 
-`${NAME}` and `${NAME:-default}` are recognized; the default is plain text and
-cannot hold another `${...}`. Expansion is not implemented yet: references are
-written back as they are.
+## References
 
-Values set with `-e` are always literal. When envik writes a value, it leaves
-it bare if that is safe, and otherwise puts it in double quotes with `\`,
-`"`, `$` and newlines escaped, so reading the file back gives the same value.
+```sh
+URL=https://${BASE}
+PORT=123
+BASE=site:${PORT}
+LOG=${LOG_LEVEL:-info}
+```
+
+gives `URL=https://site:123`, `BASE=site:123` and `LOG=info`.
+
+- `${NAME}` takes `NAME`'s final value, after every file and `-e` is applied,
+  whatever order the lines are in. With `-e PORT=445` above, both `BASE` and
+  `URL` change.
+- `${NAME:-default}` takes `default` when `NAME` is unset or empty. The
+  default is plain text and cannot hold another `${...}`.
+- A reference to something unset, with no default, is an error; so is a loop
+  (`A=${B}`, `B=${A}`). Every one is reported in the same run, and nothing is
+  written.
+- Nothing expands inside `'...'`, `$NAME` without braces stays as it is, and
+  values given with `-e` are always literal.
+
+## Output
+
+The output has every reference expanded. A template line that holds no
+reference and keeps its value comes out exactly as it was. Any other value is
+written:
+
+- bare, when it only has letters, digits and `_-./:@%+,=`;
+- in single quotes when it needs quoting: `'a b'`, `'$5'`;
+- in double quotes with escapes when it holds a `'` or a newline:
+  `"it's"`, `"a\nb"`.
+
+Reading the output back gives the same values.

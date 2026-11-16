@@ -3,6 +3,7 @@
 //! The library never touches the disk or the process environment: callers
 //! hand it file contents and values, and get the output text back.
 
+mod interpolate;
 mod key;
 mod merge;
 mod parse;
@@ -12,6 +13,7 @@ mod value;
 use std::fmt;
 use std::path::Path;
 
+pub use interpolate::InterpolateError;
 pub use key::Key;
 pub use parse::{ParseError, ParseErrorKind};
 pub use value::ValueError;
@@ -32,6 +34,9 @@ pub enum Error {
     /// Invalid lines, across all inputs, in input order.
     #[error("{}", one_per_line(.0))]
     Parse(Vec<ParseError>),
+    /// Missing references and cycles, across all keys.
+    #[error("{}", one_per_line(.0))]
+    Interpolate(Vec<InterpolateError>),
 }
 
 /// Joins errors one per line.
@@ -59,7 +64,8 @@ pub fn generate(inputs: &[Source<'_>], overrides: &[(Key, String)]) -> Result<St
         return Err(Error::Parse(errors));
     }
     let merged = merge::merge(&files, overrides);
+    let resolved = interpolate::interpolate(&merged).map_err(Error::Interpolate)?;
     let empty = parse::EnvFile { lines: Vec::new() };
     let template = files.first().unwrap_or(&empty);
-    Ok(render::render(template, &merged))
+    Ok(render::render(template, &resolved))
 }
