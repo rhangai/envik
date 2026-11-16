@@ -11,7 +11,7 @@ envik generate -i .env.example -i .env.override -e PORT=445 -o .env
 | Option | |
 |---|---|
 | `-i, --input <FILE>` | Input file. Repeatable, at least one. |
-| `-e, --env <KEY=VALUE>` | A value, taken literally. Repeatable. |
+| `-e, --env <KEY[=VALUE]>` | A value, taken literally. With just `KEY`, the value comes from your environment (`-e PORT`). Repeatable. |
 | `-o, --output <FILE>` | Output file, created or overwritten. Without it, the result goes to stdout. |
 
 **Precedence.** The `-i` files apply in the order given, later ones winning.
@@ -41,8 +41,9 @@ they first appeared. Comments from the other files are dropped.
 Anything looser is plain text and never touched: `# DEBUG` (no `=`),
 `#  DEBUG=` (two spaces), an indented `  # DEBUG=`.
 
-**Errors.** A missing input, an invalid line or an invalid `-e` prints an
-error and exits non-zero. Nothing is written: an existing output file stays
+**Errors.** A missing input, an invalid line, an invalid `-e` or an `-e KEY`
+that is not in your environment prints an error and exits non-zero. An empty
+variable (`PORT=`) is a value, not an error. Nothing is written: an existing output file stays
 as it was.
 
 ## Syntax

@@ -297,3 +297,118 @@ fn interpolation_errors() {
     }
     fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Runs `envik` with `set` added to and `remove` taken out of its environment.
+fn envik_env(args: &[&str], set: &[(&str, &str)], remove: &[&str]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_envik"));
+    cmd.args(args);
+    for (key, value) in set {
+        cmd.env(key, value);
+    }
+    for key in remove {
+        cmd.env_remove(key);
+    }
+    cmd.output().unwrap()
+}
+
+#[test]
+fn env_lookup_overrides() {
+    let dir = scratch("env_lookup_overrides");
+    let template = dir.join("a.env");
+    fs::write(&template, "HOST=x\nPORT=1\n").unwrap();
+
+    let run = envik_env(
+        &["generate", "-i", path(&template), "-e", "PORT"],
+        &[("PORT", "9")],
+        &[],
+    );
+
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "HOST=x\nPORT=9\n");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn env_lookup_empty_is_value() {
+    let dir = scratch("env_lookup_empty_is_value");
+    let template = dir.join("a.env");
+    fs::write(&template, "PORT=1\n").unwrap();
+
+    let run = envik_env(
+        &["generate", "-i", path(&template), "-e", "PORT"],
+        &[("PORT", "")],
+        &[],
+    );
+
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "PORT=\n");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn env_lookup_missing_errors() {
+    let dir = scratch("env_lookup_missing_errors");
+    let template = dir.join("a.env");
+    let out = dir.join(".env");
+    let original = "KEEP=me\n# untouched\n";
+    fs::write(&template, "PORT=1\n").unwrap();
+    fs::write(&out, original).unwrap();
+
+    let run = envik_env(
+        &[
+            "generate",
+            "-i",
+            path(&template),
+            "-e",
+            "PORT",
+            "-o",
+            path(&out),
+        ],
+        &[],
+        &["PORT"],
+    );
+
+    assert!(!run.status.success(), "succeeded");
+    assert_eq!(
+        String::from_utf8(run.stderr).unwrap(),
+        "envik: `PORT` is not set in the environment\n",
+    );
+    assert_eq!(fs::read_to_string(&out).unwrap(), original);
+    let mut entries: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    entries.sort();
+    assert_eq!(entries, [".env", "a.env"], "left files behind");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn env_lookup_is_literal() {
+    let dir = scratch("env_lookup_is_literal");
+    let template = dir.join("a.env");
+    fs::write(&template, "SECRET=x\n").unwrap();
+
+    let run = envik_env(
+        &["generate", "-i", path(&template), "-e", "SECRET"],
+        &[("SECRET", "a${X}b")],
+        &["X"],
+    );
+
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    // Single quotes: reading the file back gives the same literal text.
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "SECRET='a${X}b'\n");
+    fs::remove_dir_all(&dir).unwrap();
+}

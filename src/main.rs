@@ -1,6 +1,7 @@
 //! Command line: argument parsing and all of the I/O. The merging itself is
 //! [`envik::generate`], which never touches the disk.
 
+use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -31,9 +32,10 @@ struct GenerateArgs {
     #[arg(short, long = "input", value_name = "FILE", required = true)]
     input: Vec<PathBuf>,
 
-    /// KEY=VALUE taken literally; repeat for more. Always overrides the files.
-    #[arg(short, long = "env", value_name = "KEY=VALUE", value_parser = parse_override)]
-    env: Vec<(Key, String)>,
+    /// KEY=VALUE, or KEY to take its value from the environment; repeat for
+    /// more. Always overrides the files, and is taken literally.
+    #[arg(short, long = "env", value_name = "KEY[=VALUE]", value_parser = parse_override)]
+    env: Vec<Override>,
 
     /// Output file, created or overwritten. Prints to stdout when omitted.
     #[arg(short, long = "output", value_name = "FILE")]
@@ -42,12 +44,24 @@ struct GenerateArgs {
 
 /// `-e` value parser: checks the key here so a bad name is a usage error
 /// reported by clap, before any file is read.
-fn parse_override(arg: &str) -> Result<(Key, String), String> {
-    let (name, value) = arg
-        .split_once('=')
-        .ok_or_else(|| format!("expected KEY=VALUE, found `{arg}`"))?;
+/// One `-e`. The environment is read later, with the input files, so every
+/// missing variable is reported in one run.
+#[derive(Clone, Debug)]
+enum Override {
+    Literal(Key, String),
+    FromEnv(Key),
+}
+
+fn parse_override(arg: &str) -> Result<Override, String> {
+    let (name, value) = match arg.split_once('=') {
+        Some((name, value)) => (name, Some(value)),
+        None => (arg, None),
+    };
     let key = Key::new(name).ok_or_else(|| format!("invalid variable name `{name}`"))?;
-    Ok((key, value.to_owned()))
+    Ok(match value {
+        Some(value) => Override::Literal(key, value.to_owned()),
+        None => Override::FromEnv(key),
+    })
 }
 
 fn main() -> ExitCode {
@@ -69,9 +83,10 @@ fn main() -> ExitCode {
 /// What can go wrong around the library: the I/O it does not do.
 #[derive(Debug, thiserror::Error)]
 enum CliError {
-    /// Every input that could not be read (never empty).
+    /// Every input file or `-e KEY` that could not be read (never empty);
+    /// see [`read_inputs`].
     #[error("{}", one_per_line(.0))]
-    Read(Vec<ReadError>),
+    Input(Vec<InputError>),
     #[error("{}: {source}", path.display())]
     Write { path: PathBuf, source: io::Error },
     #[error("stdout: {0}")]
@@ -81,42 +96,32 @@ enum CliError {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("{}: {source}", path.display())]
-struct ReadError {
-    path: PathBuf,
-    source: io::Error,
+enum InputError {
+    #[error("{}: {source}", path.display())]
+    Read { path: PathBuf, source: io::Error },
+    #[error("`{0}` is not set in the environment")]
+    EnvMissing(Key),
+    #[error("`{0}` in the environment is not valid UTF-8")]
+    EnvNotUtf8(Key),
 }
 
-fn one_per_line(errors: &[ReadError]) -> String {
+fn one_per_line(errors: &[InputError]) -> String {
     errors
         .iter()
-        .map(ReadError::to_string)
+        .map(InputError::to_string)
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 fn generate(args: &GenerateArgs) -> Result<(), CliError> {
-    let mut contents = Vec::with_capacity(args.input.len());
-    let mut errors = Vec::new();
-    for path in &args.input {
-        match fs::read_to_string(path) {
-            Ok(text) => contents.push(text),
-            Err(source) => errors.push(ReadError {
-                path: path.clone(),
-                source,
-            }),
-        }
-    }
-    if !errors.is_empty() {
-        return Err(CliError::Read(errors));
-    }
+    let inputs = read_inputs(args).map_err(CliError::Input)?;
     let sources: Vec<Source<'_>> = args
         .input
         .iter()
-        .zip(&contents)
+        .zip(&inputs.contents)
         .map(|(origin, contents)| Source { origin, contents })
         .collect();
-    let out = envik::generate(&sources, &args.env)?;
+    let out = envik::generate(&sources, &inputs.overrides)?;
     match &args.output {
         Some(path) => write_atomically(path, &out).map_err(|source| CliError::Write {
             path: path.clone(),
@@ -128,6 +133,51 @@ fn generate(args: &GenerateArgs) -> Result<(), CliError> {
             .map_err(CliError::Stdout)?,
     }
     Ok(())
+}
+
+/// Everything the library is handed, read from disk and the environment.
+struct Inputs {
+    /// One per `-i`, in the same order.
+    contents: Vec<String>,
+    /// One per `-e`, in the same order, `-e KEY` already looked up.
+    overrides: Vec<(Key, String)>,
+}
+
+/// Reads every `-i` file and looks up every `-e KEY`; on failure, returns
+/// every reason an input could not be read.
+fn read_inputs(args: &GenerateArgs) -> Result<Inputs, Vec<InputError>> {
+    let mut errors = Vec::new();
+    let mut contents = Vec::with_capacity(args.input.len());
+    for path in &args.input {
+        match fs::read_to_string(path) {
+            Ok(text) => contents.push(text),
+            Err(source) => errors.push(InputError::Read {
+                path: path.clone(),
+                source,
+            }),
+        }
+    }
+    let mut overrides = Vec::with_capacity(args.env.len());
+    for item in &args.env {
+        match item {
+            Override::Literal(key, value) => overrides.push((key.clone(), value.clone())),
+            Override::FromEnv(key) => match env::var_os(key.as_str()) {
+                None => errors.push(InputError::EnvMissing(key.clone())),
+                Some(value) => match value.into_string() {
+                    Ok(value) => overrides.push((key.clone(), value)),
+                    Err(_) => errors.push(InputError::EnvNotUtf8(key.clone())),
+                },
+            },
+        }
+    }
+    if errors.is_empty() {
+        Ok(Inputs {
+            contents,
+            overrides,
+        })
+    } else {
+        Err(errors)
+    }
 }
 
 /// Writes to a sibling temporary file, then renames it over `path`, so a
