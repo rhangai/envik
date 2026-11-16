@@ -412,3 +412,255 @@ fn env_lookup_is_literal() {
     assert_eq!(String::from_utf8(run.stdout).unwrap(), "SECRET='a${X}b'\n");
     fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The value of `name` in `envik`'s `KEY=value` output.
+fn value_in<'a>(out: &'a str, name: &str) -> &'a str {
+    out.lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+        .unwrap_or_else(|| panic!("`{name}` not in {out:?}"))
+}
+
+/// The names in `dir`, sorted.
+fn entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn rand_values_are_distinct() {
+    let dir = scratch("rand_values_are_distinct");
+    let template = dir.join("a.env");
+    fs::write(
+        &template,
+        "S=${rand(32)}\nA=${rand(16)}\nB=${rand(16)}\nC=${rand(8)}-${rand(8)}\nD=${S}\n",
+    )
+    .unwrap();
+
+    let run = envik(&["generate", "-i", path(&template), "--seed-value", "abc"]);
+
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let out = String::from_utf8(run.stdout).unwrap();
+    let (s, a, b, c, d) = (
+        value_in(&out, "S"),
+        value_in(&out, "A"),
+        value_in(&out, "B"),
+        value_in(&out, "C"),
+        value_in(&out, "D"),
+    );
+    assert_eq!(
+        [s.len(), a.len(), b.len(), c.len()],
+        [32, 16, 16, 17],
+        "{out}"
+    );
+    assert_ne!(a, b, "{out}");
+    assert_eq!(&c[8..9], "-", "{out}");
+    assert_ne!(&c[..8], &c[9..], "{out}");
+    assert_eq!(d, s, "{out}");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn rand_errors_and_literals() {
+    let dir = scratch("rand_errors_and_literals");
+    let template = dir.join("a.env");
+    let out = dir.join(".env");
+    let empty_seed = dir.join("empty.seed");
+    let seed = dir.join("good.seed");
+    let original = "KEEP=me\n# untouched\n";
+    fs::write(&empty_seed, "").unwrap();
+    fs::write(&seed, "abc\n").unwrap();
+
+    let ok = "S=${rand(8)}\n";
+    // (template, seed arguments, environment set for the child)
+    type Case<'a> = (&'a str, &'a [&'a str], &'a [(&'a str, &'a str)]);
+    let cases: [Case<'_>; 13] = [
+        (ok, &[], &[]),
+        ("S=${rand(0)}\n", &["--seed-value", "abc"], &[]),
+        ("S=${rand(1025)}\n", &["--seed-value", "abc"], &[]),
+        ("S=${rand(x)}\n", &["--seed-value", "abc"], &[]),
+        ("S=${nope(1)}\n", &["--seed-value", "abc"], &[]),
+        ("S=${rand(32):-x}\n", &["--seed-value", "abc"], &[]),
+        (ok, &["--seed-value", ""], &[]),
+        (ok, &["--seed-file", path(&empty_seed)], &[]),
+        (ok, &["--seed-env", "ENVIK_SEED"], &[("ENVIK_SEED", "")]),
+        (ok, &["--seed-value", "a", "--seed-file", path(&seed)], &[]),
+        (
+            ok,
+            &["--seed-value", "a", "--seed-env", "ENVIK_SEED"],
+            &[("ENVIK_SEED", "abc")],
+        ),
+        (
+            ok,
+            &["--seed-file", path(&seed), "--seed-env", "ENVIK_SEED"],
+            &[("ENVIK_SEED", "abc")],
+        ),
+        (ok, &["--seed-file-create"], &[]),
+    ];
+    for (contents, seed_args, set) in cases {
+        fs::write(&template, contents).unwrap();
+        fs::write(&out, original).unwrap();
+        let mut args = vec!["generate", "-i", path(&template), "-o", path(&out)];
+        args.extend_from_slice(seed_args);
+
+        let run = envik_env(&args, set, &[]);
+
+        assert!(
+            !run.status.success(),
+            "{contents:?} {seed_args:?} succeeded"
+        );
+        assert!(
+            !run.stderr.is_empty(),
+            "{contents:?} {seed_args:?} printed nothing on stderr"
+        );
+        assert_eq!(
+            fs::read_to_string(&out).unwrap(),
+            original,
+            "{contents:?} {seed_args:?}"
+        );
+        assert_eq!(
+            entries(&dir),
+            [".env", "a.env", "empty.seed", "good.seed"],
+            "{contents:?} {seed_args:?} left files behind"
+        );
+    }
+
+    // No seed is needed: neither of these is a call.
+    fs::write(&template, "L='${rand(8)}'\n").unwrap();
+    let run = envik(&["generate", "-i", path(&template), "-e", "X=${rand(8)}"]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        "L='${rand(8)}'\nX='${rand(8)}'\n"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn seed_file_create_and_reuse() {
+    let dir = scratch("seed_file_create_and_reuse");
+    let template = dir.join("a.env");
+    let seed = dir.join(".seed");
+    let out = dir.join(".env");
+    let args = [
+        "generate",
+        "-i",
+        path(&template),
+        "-o",
+        path(&out),
+        "--seed-file",
+        path(&seed),
+        "--seed-file-create",
+    ];
+
+    // A failing generation creates no seed.
+    fs::write(&template, "S=${rand(16)}\nX=${MISSING}\n").unwrap();
+    let run = envik(&args);
+    assert!(!run.status.success(), "succeeded");
+    assert_eq!(entries(&dir), ["a.env"]);
+
+    fs::write(&template, "S=${rand(16)}\n").unwrap();
+    let first = envik(&args);
+    assert!(
+        first.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let seed_text = fs::read_to_string(&seed).unwrap();
+    let first_out = fs::read_to_string(&out).unwrap();
+    // 43 base64url characters (32 random bytes) and a newline.
+    assert_eq!(seed_text.len(), 44, "{seed_text:?}");
+    assert!(seed_text.ends_with('\n'), "{seed_text:?}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&seed).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    let second = envik(&args);
+    assert!(
+        second.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(fs::read_to_string(&seed).unwrap(), seed_text);
+    assert_eq!(fs::read_to_string(&out).unwrap(), first_out);
+    // The output really came from the file's seed.
+    let reused = envik(&[
+        "generate",
+        "-i",
+        path(&template),
+        "--seed-value",
+        seed_text.trim_end_matches('\n'),
+    ]);
+    assert_eq!(String::from_utf8(reused.stdout).unwrap(), first_out);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn seed_from_env() {
+    let dir = scratch("seed_from_env");
+    let template = dir.join("a.env");
+    let missing = dir.join("missing.env");
+    fs::write(&template, "S=${rand(16)}\n").unwrap();
+
+    let from_env = envik_env(
+        &[
+            "generate",
+            "-i",
+            path(&template),
+            "--seed-env",
+            "ENVIK_SEED",
+        ],
+        &[("ENVIK_SEED", "abc")],
+        &[],
+    );
+    let from_value = envik(&["generate", "-i", path(&template), "--seed-value", "abc"]);
+    assert!(
+        from_env.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&from_env.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(from_env.stdout).unwrap(),
+        String::from_utf8(from_value.stdout).unwrap()
+    );
+
+    let run = envik_env(
+        &[
+            "generate",
+            "-i",
+            path(&template),
+            "-i",
+            path(&missing),
+            "--seed-env",
+            "ENVIK_SEED",
+        ],
+        &[],
+        &["ENVIK_SEED"],
+    );
+    assert!(!run.status.success(), "succeeded");
+    assert_eq!(
+        String::from_utf8(run.stderr).unwrap(),
+        format!(
+            "envik: {}: No such file or directory (os error 2)\n\
+             envik: `ENVIK_SEED` is not set in the environment\n",
+            path(&missing)
+        ),
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}

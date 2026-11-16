@@ -92,6 +92,40 @@ gives `URL=https://site:123`, `BASE=site:123` and `LOG=info`.
 - Nothing expands inside `'...'`, `$NAME` without braces stays as it is, and
   values given with `-e` are always literal.
 
+## Generated secrets
+
+```sh
+APP_SECRET=${rand(32)}
+```
+
+`${rand(n)}` writes `n` characters (1 to 1024) from `A-Z a-z 0-9 - _`. They
+look random, but they come from a seed, so running `generate` again gives the
+same secrets and nothing gets rotated by accident. The value depends only on
+the seed, the variable's name and which `rand` it is inside that value:
+adding or moving other lines never changes it. Two variables never get the
+same value, and `OTHER=${APP_SECRET}` copies it.
+
+Give the seed one way, at most:
+
+| Option | |
+|---|---|
+| `--seed-value <TEXT>` | The seed itself. It stays in your shell history, so use it locally. |
+| `--seed-file <FILE>` | Read it from a file. Add the file to `.gitignore`. |
+| `--seed-file-create` | With `--seed-file`: create the file with a random seed if it is not there yet. Readable by you only, and written only when the generation succeeds. |
+| `--seed-env <VAR>` | Read it from an environment variable, e.g. a CI secret. |
+
+```sh
+echo .env-seed >> .gitignore
+envik generate -i .env.example -o .env --seed-file .env-seed --seed-file-create
+```
+
+A `rand` with no seed, an empty seed, `rand(0)`, an unknown function or a
+default on a call (`${rand(8):-x}`) is an error. Like a reference, `rand` does
+nothing inside `'...'` or in a `-e` value.
+
+Anyone with the seed can regenerate your secrets: keep it as secret as they
+are.
+
 ## Output
 
 The output has every reference expanded. A template line that holds no

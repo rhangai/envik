@@ -6,7 +6,8 @@ use std::fmt;
 
 use crate::key::Key;
 use crate::merge::Merged;
-use crate::value::{Part, Value};
+use crate::rand::Seed;
+use crate::value::{Call, Part, Value};
 
 /// A reference that could not be expanded.
 #[derive(Debug, thiserror::Error)]
@@ -15,6 +16,9 @@ pub enum InterpolateError {
     /// `key`'s value references `name`, which no source sets, with no default.
     #[error("`{key}`: `${{{name}}}` is not set")]
     Missing { key: Key, name: Key },
+    /// `key`'s value calls `rand`, and no seed was given.
+    #[error("`{key}`: `${{rand(...)}}` needs a seed (--seed-value, --seed-file or --seed-env)")]
+    NoSeed { key: Key },
     /// Keys that reference each other in a loop; the first is repeated last.
     #[error("circular reference: {}", Chain(.chain))]
     Cycle { chain: Vec<Key> },
@@ -34,13 +38,18 @@ impl fmt::Display for Chain<'_> {
     }
 }
 
-/// Every key's value with its references expanded, in the same order.
-/// `${NAME:-default}` takes `default` when `NAME` is unset or empty. Returns
+/// Every key's value with its references expanded and its calls run, in the
+/// same order. `${NAME:-default}` takes `default` when `NAME` is unset or
+/// empty; `${rand(n)}` needs `seed`. Returns
 /// every missing reference and every cycle, each once: a key that fails only
 /// because a key it references failed adds nothing.
-pub fn interpolate(merged: &Merged<Value>) -> Result<Merged<String>, Vec<InterpolateError>> {
+pub fn interpolate(
+    merged: &Merged<Value>,
+    seed: Option<&Seed>,
+) -> Result<Merged<String>, Vec<InterpolateError>> {
     let mut resolver = Resolver {
         merged,
+        seed,
         state: HashMap::new(),
         stack: Vec::new(),
         errors: Vec::new(),
@@ -67,6 +76,7 @@ enum State {
 
 struct Resolver<'a> {
     merged: &'a Merged<Value>,
+    seed: Option<&'a Seed>,
     state: HashMap<&'a Key, State>,
     /// The keys being resolved, outermost first, to name a cycle's chain.
     stack: Vec<&'a Key>,
@@ -92,6 +102,7 @@ impl<'a> Resolver<'a> {
         self.stack.push(key);
         let mut text = String::new();
         let mut ok = true;
+        let mut calls = 0;
         for part in value.parts() {
             match part {
                 Part::Literal(literal) => text.push_str(literal),
@@ -99,6 +110,19 @@ impl<'a> Resolver<'a> {
                     Some(expanded) => text.push_str(&expanded),
                     None => ok = false,
                 },
+                Part::Call(Call::Rand { len }) => {
+                    match self.seed {
+                        Some(seed) => text.push_str(&seed.rand(key, calls, *len)),
+                        // One error per key, however many calls it has.
+                        None if ok => {
+                            self.errors
+                                .push(InterpolateError::NoSeed { key: key.clone() });
+                            ok = false;
+                        }
+                        None => {}
+                    }
+                    calls += 1;
+                }
             }
         }
         self.stack.pop();
@@ -165,7 +189,7 @@ mod tests {
             .map(|(name, text)| (Key::new(name).unwrap(), (*text).to_owned()))
             .collect();
         let merged = crate::merge::merge(&[file], &overrides);
-        let resolved = interpolate(&merged).unwrap();
+        let resolved = interpolate(&merged, None).unwrap();
         merged
             .iter()
             .map(|(key, _)| {

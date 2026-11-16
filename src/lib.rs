@@ -7,6 +7,7 @@ mod interpolate;
 mod key;
 mod merge;
 mod parse;
+mod rand;
 mod render;
 mod value;
 
@@ -16,6 +17,7 @@ use std::path::Path;
 pub use interpolate::InterpolateError;
 pub use key::Key;
 pub use parse::{ParseError, ParseErrorKind};
+pub use rand::{Seed, new_seed_text};
 pub use value::ValueError;
 
 /// One input file: its contents, and where it came from for error messages.
@@ -50,8 +52,13 @@ fn one_per_line<T: fmt::Display>(errors: &[T]) -> String {
 
 /// Merges `inputs` (later ones winning) and `overrides` (always winning) into
 /// the text of a `.env`. The first input is the layout template; with no
-/// inputs, the output is just the overrides.
-pub fn generate(inputs: &[Source<'_>], overrides: &[(Key, String)]) -> Result<String, Error> {
+/// inputs, the output is just the overrides. `seed` is what `${rand(n)}`
+/// derives from; without it, any `rand` call is an error.
+pub fn generate(
+    inputs: &[Source<'_>],
+    overrides: &[(Key, String)],
+    seed: Option<&Seed>,
+) -> Result<String, Error> {
     let mut files = Vec::with_capacity(inputs.len());
     let mut errors = Vec::new();
     for source in inputs {
@@ -64,7 +71,7 @@ pub fn generate(inputs: &[Source<'_>], overrides: &[(Key, String)]) -> Result<St
         return Err(Error::Parse(errors));
     }
     let merged = merge::merge(&files, overrides);
-    let resolved = interpolate::interpolate(&merged).map_err(Error::Interpolate)?;
+    let resolved = interpolate::interpolate(&merged, seed).map_err(Error::Interpolate)?;
     let empty = parse::EnvFile { lines: Vec::new() };
     let template = files.first().unwrap_or(&empty);
     Ok(render::render(template, &resolved))

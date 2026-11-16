@@ -14,7 +14,19 @@ pub enum Part {
     Literal(String),
     /// `${name}`, or `${name:-default}` with `default` as literal text.
     Ref { name: Key, default: Option<String> },
+    /// `${function(args)}`, already checked.
+    Call(Call),
 }
+
+/// A function call inside `${...}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Call {
+    /// `rand(len)`: `len` characters, 1 to [`MAX_RAND_LEN`].
+    Rand { len: usize },
+}
+
+/// Longest `rand(n)`: a guard against a typo asking for megabytes.
+pub const MAX_RAND_LEN: usize = 1024;
 
 /// A sequence of [`Part`]s, normalized so that equal content compares equal:
 /// no empty literal, and no two literals side by side. The empty value has no
@@ -60,8 +72,11 @@ impl Value {
         }
     }
 
-    pub fn push_ref(&mut self, name: Key, default: Option<String>) {
-        self.0.push(Part::Ref { name, default });
+    /// Appends a [`Part::Ref`] or [`Part::Call`]; text goes through
+    /// [`Value::push_str`], which keeps literals merged.
+    fn push_placeholder(&mut self, part: Part) {
+        debug_assert!(!matches!(part, Part::Literal(_)));
+        self.0.push(part);
     }
 }
 
@@ -117,6 +132,12 @@ pub enum ValueError {
     InvalidRef(String),
     #[error("a default cannot contain another `${{...}}`")]
     NestedRef,
+    #[error("unknown function `{0}` (only `rand` exists)")]
+    UnknownFunction(String),
+    #[error("invalid call `${{{0}}}` (expected `rand(n)` with n from 1 to {MAX_RAND_LEN})")]
+    InvalidCall(String),
+    #[error("a function call cannot have a default: `${{{0}}}`")]
+    DefaultOnCall(String),
 }
 
 /// Reads what follows `=` on a line: the value, and where it sits in `rest`,
@@ -172,8 +193,7 @@ fn read_unquoted(text: &str) -> Result<Value, ValueError> {
     while let Some(c) = chars.next() {
         if c == '$' && chars.clone().next() == Some('{') {
             chars.next();
-            let (name, default) = read_ref(&mut chars, false)?;
-            value.push_ref(name, default);
+            value.push_placeholder(read_ref(&mut chars, false)?);
         } else {
             value.push_char(c);
         }
@@ -199,8 +219,7 @@ fn read_double_quoted(body: &str) -> Result<(Value, usize), ValueError> {
             '\\' => value.push_char(unescape(chars.next())?),
             '$' if chars.clone().next() == Some('{') => {
                 chars.next();
-                let (name, default) = read_ref(&mut chars, true)?;
-                value.push_ref(name, default);
+                value.push_placeholder(read_ref(&mut chars, true)?);
             }
             _ => value.push_char(c),
         }
@@ -221,10 +240,7 @@ fn unescape(next: Option<char>) -> Result<char, ValueError> {
 /// Reads `name}` or `name:-default}` from `chars`, which sits just after
 /// `${`. Inside `"..."` (`quoted`), the default takes escapes and a bare `"`
 /// means the reference was never closed.
-fn read_ref(
-    chars: &mut std::str::Chars<'_>,
-    quoted: bool,
-) -> Result<(Key, Option<String>), ValueError> {
+fn read_ref(chars: &mut std::str::Chars<'_>, quoted: bool) -> Result<Part, ValueError> {
     let mut text = String::new();
     loop {
         match chars.next() {
@@ -242,8 +258,32 @@ fn read_ref(
         Some((name, default)) => (name, Some(default.to_owned())),
         None => (text.as_str(), None),
     };
-    let key = Key::new(name).ok_or_else(|| ValueError::InvalidRef(text.clone()))?;
-    Ok((key, default))
+    if name.contains('(') {
+        if default.is_some() {
+            return Err(ValueError::DefaultOnCall(text.clone()));
+        }
+        return read_call(name).map(Part::Call);
+    }
+    let name = Key::new(name).ok_or_else(|| ValueError::InvalidRef(text.clone()))?;
+    Ok(Part::Ref { name, default })
+}
+
+/// `function(args)`, the text between `${` and `}`.
+fn read_call(text: &str) -> Result<Call, ValueError> {
+    let invalid = || ValueError::InvalidCall(text.to_owned());
+    let (function, rest) = text.split_once('(').ok_or_else(invalid)?;
+    let args = rest.strip_suffix(')').ok_or_else(invalid)?;
+    match function {
+        "rand" => {
+            let len: usize = args.trim().parse().map_err(|_| invalid())?;
+            if (1..=MAX_RAND_LEN).contains(&len) {
+                Ok(Call::Rand { len })
+            } else {
+                Err(invalid())
+            }
+        }
+        _ => Err(ValueError::UnknownFunction(function.to_owned())),
+    }
 }
 
 /// After a closing quote only blanks may follow, or a blank and a comment.

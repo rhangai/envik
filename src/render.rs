@@ -93,7 +93,7 @@ mod tests {
             .iter()
             .map(|(key, value)| (Key::new(key).unwrap(), (*value).to_owned()))
             .collect();
-        let resolved = crate::interpolate::interpolate(&merge(&files, &overrides)).unwrap();
+        let resolved = crate::interpolate::interpolate(&merge(&files, &overrides), None).unwrap();
         render(&read(template), &resolved)
     }
 
