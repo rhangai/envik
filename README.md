@@ -24,6 +24,23 @@ value is replaced; spacing and an inline comment (`PORT=3000  # api`) stay.
 Keys that the template does not have are appended at the end, in the order
 they first appeared. Comments from the other files are dropped.
 
+**Optional variables.** A template line that is exactly `#KEY=...` or
+`# KEY=...` is an optional variable:
+
+```sh
+# Turn on verbose logs
+# DEBUG=false  # any value
+```
+
+- If some file or `-e` sets `DEBUG`, the line is turned on in place:
+  `DEBUG=1  # any value`. Only the first such line per key is.
+- If nothing sets `DEBUG`, the line is left out of the output.
+- If the template also has an active `DEBUG=` line, the commented one stays
+  as it is.
+
+Anything looser is plain text and never touched: `# DEBUG` (no `=`),
+`#  DEBUG=` (two spaces), an indented `  # DEBUG=`.
+
 **Errors.** A missing input, an invalid line or an invalid `-e` prints an
 error and exits non-zero. Nothing is written: an existing output file stays
 as it was.

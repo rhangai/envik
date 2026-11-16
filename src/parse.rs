@@ -12,14 +12,29 @@ use crate::value::{self, Value, ValueError};
 pub enum Line {
     /// Blank line or comment: written back untouched.
     Verbatim(String),
-    /// `KEY=value`. `span` is where the value sits in `raw`, quotes included,
-    /// so it can be replaced without disturbing spacing or an inline comment.
-    Entry {
-        key: Key,
-        value: Value,
-        raw: String,
-        span: Range<usize>,
+    Entry(Entry),
+    /// `#KEY=value` or `# KEY=value`: an optional variable the template
+    /// offers. `entry` is the text after `#` or `# `, parsed as a line of its
+    /// own.
+    /// Whether it is turned on, kept or dropped is decided by
+    /// [`render`](crate::render::render).
+    Commented {
+        /// `# KEY=` rather than `#KEY=`, to write the line back as it was.
+        space_after_hash: bool,
+        entry: Entry,
     },
+}
+
+/// A `KEY=value` line.
+#[derive(Debug)]
+pub struct Entry {
+    pub key: Key,
+    pub value: Value,
+    /// The whole line, line ending included.
+    pub raw: String,
+    /// Where the value sits in `raw`, quotes included, so it can be replaced
+    /// without disturbing spacing or an inline comment.
+    pub span: Range<usize>,
 }
 
 /// A parsed file, every line kept in order so it can be written back.
@@ -29,11 +44,12 @@ pub struct EnvFile {
 }
 
 impl EnvFile {
-    /// The `KEY=value` lines, in file order.
+    /// The active `KEY=value` lines, in file order; commented ones are not
+    /// values.
     pub fn entries(&self) -> impl Iterator<Item = (&Key, &Value)> {
         self.lines.iter().filter_map(|line| match line {
-            Line::Entry { key, value, .. } => Some((key, value)),
-            Line::Verbatim(_) => None,
+            Line::Entry(entry) => Some((&entry.key, &entry.value)),
+            Line::Verbatim(_) | Line::Commented { .. } => None,
         })
     }
 }
@@ -85,11 +101,21 @@ pub fn parse(src: &str, origin: &Path) -> Result<EnvFile, Vec<ParseError>> {
 }
 
 fn parse_line(raw: &str) -> Result<Line, ParseErrorKind> {
-    let content = raw.trim_end_matches(['\n', '\r']);
-    let trimmed = content.trim_start();
+    let trimmed = raw.trim_start();
     if trimmed.is_empty() || trimmed.starts_with('#') {
-        return Ok(Line::Verbatim(raw.to_owned()));
+        return Ok(match commented_entry(raw) {
+            Some((space_after_hash, entry)) => Line::Commented {
+                space_after_hash,
+                entry,
+            },
+            None => Line::Verbatim(raw.to_owned()),
+        });
     }
+    parse_entry(raw).map(Line::Entry)
+}
+
+fn parse_entry(raw: &str) -> Result<Entry, ParseErrorKind> {
+    let content = raw.trim_end_matches(['\n', '\r']);
     let Some(eq) = content.find('=') else {
         return Err(ParseErrorKind::MissingEquals(content.to_owned()));
     };
@@ -97,12 +123,28 @@ fn parse_line(raw: &str) -> Result<Line, ParseErrorKind> {
     let key = Key::new(name).ok_or_else(|| ParseErrorKind::InvalidKey(name.to_owned()))?;
     let (value, span) = value::read(&content[eq + 1..])?;
     let span = eq + 1 + span.start..eq + 1 + span.end;
-    Ok(Line::Entry {
+    Ok(Entry {
         key,
         value,
         raw: raw.to_owned(),
         span,
     })
+}
+
+/// A comment that is exactly `#KEY=...` or `# KEY=...` with a valid value;
+/// anything looser (indented, two spaces, no `=`) is plain text.
+/// Returns whether a space follows the `#`, and the entry after it.
+fn commented_entry(raw: &str) -> Option<(bool, Entry)> {
+    let after_hash = raw.strip_prefix('#')?;
+    let (space_after_hash, rest) = match after_hash.strip_prefix(' ') {
+        Some(rest) => (true, rest),
+        None => (false, after_hash),
+    };
+    let (name, _) = rest.split_once('=')?;
+    Key::new(name)?;
+    parse_entry(rest)
+        .ok()
+        .map(|entry| (space_after_hash, entry))
 }
 
 #[cfg(test)]

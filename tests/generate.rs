@@ -192,3 +192,33 @@ fn quotes_only_when_needed() {
     );
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn uncomments_commented_key() {
+    let dir = scratch("uncomments_commented_key");
+    let template = dir.join("template.env");
+    fs::write(&template, "# DEBUG=\nHOST=x\n#VERBOSE=\n").unwrap();
+
+    let run = envik(&[
+        "generate",
+        "-i",
+        path(&template),
+        "-e",
+        "DEBUG=1",
+        "-e",
+        "VERBOSE=yes",
+    ]);
+
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        "DEBUG=1\n\
+         HOST=x\n\
+         VERBOSE=yes\n",
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
