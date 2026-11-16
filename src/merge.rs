@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::parse::{EnvFile, Key};
+use crate::key::Key;
+use crate::parse::EnvFile;
+use crate::value::Value;
 
 /// Final value per key, plus the order in which keys first appeared.
 ///
@@ -12,44 +14,42 @@ use crate::parse::{EnvFile, Key};
 /// either, and [`Merged::iter`] indexes `values` relying on it.
 #[derive(Debug, Default)]
 pub struct Merged {
-    values: HashMap<Key, String>,
+    values: HashMap<Key, Value>,
     order: Vec<Key>,
 }
 
 impl Merged {
     /// Final value of `key`, if any source set it.
-    pub fn get(&self, key: &Key) -> Option<&str> {
-        self.values.get(key).map(String::as_str)
+    pub fn get(&self, key: &Key) -> Option<&Value> {
+        self.values.get(key)
     }
 
     /// Keys in order of first appearance, each with its final value.
-    pub fn iter(&self) -> impl Iterator<Item = (&Key, &str)> {
-        self.order
-            .iter()
-            .map(|key| (key, self.values[key].as_str()))
+    pub fn iter(&self) -> impl Iterator<Item = (&Key, &Value)> {
+        self.order.iter().map(|key| (key, &self.values[key]))
     }
 
     /// Later calls win; the first call fixes the key's position.
-    fn set(&mut self, key: &Key, value: &str) {
+    fn set(&mut self, key: &Key, value: &Value) {
         match self.values.get_mut(key) {
-            Some(slot) => value.clone_into(slot),
+            Some(slot) => slot.clone_from(value),
             None => {
                 self.order.push(key.clone());
-                self.values.insert(key.clone(), value.to_owned());
+                self.values.insert(key.clone(), value.clone());
             }
         }
     }
 }
 
-/// Files apply in order, later ones winning; `overrides` (`-e`) apply last
-/// and always win.
+/// Files apply in order, later ones winning; `overrides` (`-e`) apply last,
+/// always win, and are taken literally: no `${...}` in them is a reference.
 pub fn merge(files: &[EnvFile], overrides: &[(Key, String)]) -> Merged {
     let mut merged = Merged::default();
     for (key, value) in files.iter().flat_map(EnvFile::entries) {
         merged.set(key, value);
     }
-    for (key, value) in overrides {
-        merged.set(key, value);
+    for (key, text) in overrides {
+        merged.set(key, &Value::literal(text.clone()));
     }
     merged
 }

@@ -157,3 +157,38 @@ fn errors_leave_output_untouched() {
     }
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn quotes_only_when_needed() {
+    let dir = scratch("quotes_only_when_needed");
+    let template = dir.join("template.env");
+    fs::write(&template, "MSG=x\nSIMPLE=x\nURL=x\nPRICE=x\n").unwrap();
+
+    let run = envik(&[
+        "generate",
+        "-i",
+        path(&template),
+        "-e",
+        "MSG=a b",
+        "-e",
+        "SIMPLE=abc",
+        "-e",
+        "URL=postgres://user@db:5432/app",
+        "-e",
+        "PRICE=$5",
+    ]);
+
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        "MSG=\"a b\"\n\
+         SIMPLE=abc\n\
+         URL=postgres://user@db:5432/app\n\
+         PRICE=\"\\$5\"\n",
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}

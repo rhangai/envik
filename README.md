@@ -35,7 +35,27 @@ as it was.
 KEY=value
 KEY = value   # inline comment (`#` after a blank)
 EMPTY=
+QUOTED="line one\nline two"
+LITERAL='nothing in here is special: \n ${X}'
 ```
 
 Variable names match `[A-Za-z_][A-Za-z0-9_]*`. Spaces around `=` and around
-the value are trimmed.
+an unquoted value are trimmed.
+
+| Form | Escapes | `${...}` |
+|---|---|---|
+| unquoted | none | yes |
+| `"..."` | `\n`, `\"`, `\\`, `\$`; any other is an error | yes |
+| `'...'` | none | no |
+
+After a closing quote, only blanks or a blank and a `#` comment may follow.
+Anything else — `export KEY=...`, an unclosed quote, an unknown escape — is an
+error that names the file and line. Every invalid line is reported in one run.
+
+`${NAME}` and `${NAME:-default}` are recognized; the default is plain text and
+cannot hold another `${...}`. Expansion is not implemented yet: references are
+written back as they are.
+
+Values set with `-e` are always literal. When envik writes a value, it leaves
+it bare if that is safe, and otherwise puts it in double quotes with `\`,
+`"`, `$` and newlines escaped, so reading the file back gives the same value.

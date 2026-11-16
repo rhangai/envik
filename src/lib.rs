@@ -3,14 +3,18 @@
 //! The library never touches the disk or the process environment: callers
 //! hand it file contents and values, and get the output text back.
 
+mod key;
 mod merge;
 mod parse;
 mod render;
+mod value;
 
 use std::fmt;
 use std::path::Path;
 
-pub use parse::{Key, ParseError, ParseErrorKind};
+pub use key::Key;
+pub use parse::{ParseError, ParseErrorKind};
+pub use value::ValueError;
 
 /// One input file: its contents, and where it came from for error messages.
 #[derive(Clone, Copy, Debug)]

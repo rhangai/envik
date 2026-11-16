@@ -3,8 +3,10 @@
 
 use std::collections::HashSet;
 
+use crate::key::Key;
 use crate::merge::Merged;
-use crate::parse::{EnvFile, Key, Line};
+use crate::parse::{EnvFile, Line};
+use crate::value::Value;
 
 /// A line whose value did not change comes back byte for byte; a changed
 /// one has only its value replaced, keeping spacing and inline comment.
@@ -26,7 +28,7 @@ pub fn render(template: &EnvFile, merged: &Merged) -> String {
                     out.push_str(raw);
                 } else {
                     out.push_str(&raw[..span.start]);
-                    out.push_str(final_value);
+                    final_value.write_env(&mut out);
                     out.push_str(&raw[span.end..]);
                 }
             }
@@ -45,9 +47,9 @@ pub fn render(template: &EnvFile, merged: &Merged) -> String {
     out
 }
 
-fn push_entry(out: &mut String, key: &Key, value: &str) {
+fn push_entry(out: &mut String, key: &Key, value: &Value) {
     out.push_str(key.as_str());
     out.push('=');
-    out.push_str(value);
+    value.write_env(out);
     out.push('\n');
 }

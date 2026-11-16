@@ -1,45 +1,22 @@
 //! Reads a `.env` file into lines that keep their original text, so the first
 //! input can be reproduced as-is and only the values swapped.
 
-use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-/// A variable name: `[A-Za-z_][A-Za-z0-9_]*`. Only built through [`Key::new`].
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Key(String);
-
-impl Key {
-    /// Returns `None` when `name` is not a valid variable name.
-    pub fn new(name: &str) -> Option<Self> {
-        let mut chars = name.chars();
-        let first = chars.next()?;
-        let valid = (first.is_ascii_alphabetic() || first == '_')
-            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-        valid.then(|| Key(name.to_owned()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+use crate::key::Key;
+use crate::value::{self, Value, ValueError};
 
 /// One line of the file, with its line ending, exactly as read.
 #[derive(Debug)]
 pub enum Line {
     /// Blank line or comment: written back untouched.
     Verbatim(String),
-    /// `KEY=value`. `span` is where the value sits in `raw`, so it can be
-    /// replaced without disturbing spacing or an inline comment.
+    /// `KEY=value`. `span` is where the value sits in `raw`, quotes included,
+    /// so it can be replaced without disturbing spacing or an inline comment.
     Entry {
         key: Key,
-        value: String,
+        value: Value,
         raw: String,
         span: Range<usize>,
     },
@@ -53,9 +30,9 @@ pub struct EnvFile {
 
 impl EnvFile {
     /// The `KEY=value` lines, in file order.
-    pub fn entries(&self) -> impl Iterator<Item = (&Key, &str)> {
+    pub fn entries(&self) -> impl Iterator<Item = (&Key, &Value)> {
         self.lines.iter().filter_map(|line| match line {
-            Line::Entry { key, value, .. } => Some((key, value.as_str())),
+            Line::Entry { key, value, .. } => Some((key, value)),
             Line::Verbatim(_) => None,
         })
     }
@@ -81,6 +58,8 @@ pub enum ParseErrorKind {
     MissingEquals(String),
     #[error("invalid variable name `{0}`")]
     InvalidKey(String),
+    #[error(transparent)]
+    Value(#[from] ValueError),
 }
 
 /// Parses `src`; `origin` only labels errors. On failure, returns every
@@ -116,8 +95,8 @@ fn parse_line(raw: &str) -> Result<Line, ParseErrorKind> {
     };
     let name = content[..eq].trim();
     let key = Key::new(name).ok_or_else(|| ParseErrorKind::InvalidKey(name.to_owned()))?;
-    let span = value_span(content, eq + 1);
-    let value = content[span.clone()].to_owned();
+    let (value, span) = value::read(&content[eq + 1..])?;
+    let span = eq + 1 + span.start..eq + 1 + span.end;
     Ok(Line::Entry {
         key,
         value,
@@ -126,26 +105,53 @@ fn parse_line(raw: &str) -> Result<Line, ParseErrorKind> {
     })
 }
 
-/// Where the value lies in `content`, starting the search at `start` (just
-/// after `=`): leading blanks skipped, ends before trailing blanks or a `#`
-/// that follows a blank.
-/// An empty value sits right after `=`, so a new one is not glued to `#`.
-fn value_span(content: &str, start: usize) -> Range<usize> {
-    let rest = &content[start..];
-    let leading = rest.len() - rest.trim_start().len();
-    let body = &rest[leading..];
-    let mut end = body.len();
-    let mut previous_blank = leading > 0;
-    for (index, c) in body.char_indices() {
-        if c == '#' && previous_blank {
-            end = index;
-            break;
-        }
-        previous_blank = c.is_whitespace();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `KEY=value` of `src`, as (name, value).
+    fn read(src: &str) -> Vec<(String, Value)> {
+        let file = parse(src, Path::new("test.env")).unwrap();
+        file.entries()
+            .map(|(key, value)| (key.as_str().to_owned(), value.clone()))
+            .collect()
     }
-    let value_len = body[..end].trim_end().len();
-    if value_len == 0 {
-        return start..start;
+
+    fn lit(text: &str) -> Value {
+        Value::literal(text.to_owned())
     }
-    start + leading..start + leading + value_len
+
+    fn entry(key: &str, text: &str) -> (String, Value) {
+        (key.to_owned(), lit(text))
+    }
+
+    #[test]
+    fn unquoted_value_rules() {
+        assert_eq!(
+            read(concat!(
+                "A=valor # comentário\n",
+                "B=a#b\n",
+                "C = valor  \n",
+                "  D  =  x y  \n",
+                "E=#x\n",
+                "F= #x\n",
+                "G=a\t#b\n",
+                "H=\n",
+                "I=a ## b\n",
+                "J=valor\r\n",
+            )),
+            [
+                entry("A", "valor"),
+                entry("B", "a#b"),
+                entry("C", "valor"),
+                entry("D", "x y"),
+                entry("E", "#x"),
+                entry("F", ""),
+                entry("G", "a"),
+                entry("H", ""),
+                entry("I", "a"),
+                entry("J", "valor"),
+            ],
+        );
+    }
 }
