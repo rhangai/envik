@@ -167,3 +167,17 @@ written:
   `"it's"`, `"a\nb"`.
 
 Reading the output back gives the same values.
+
+## Releasing
+
+For maintainers: Actions → **Prepare release** → Run workflow, on `main`.
+Give a version (`0.2.0`) or leave it empty to work it out from the commits
+since the last tag (`feat` bumps the minor, `fix` the patch). It bumps
+`Cargo.toml`, writes `CHANGELOG.md`, commits, tags and pushes; the tag starts
+the **Release** workflow, which builds every target, creates the GitHub
+Release and publishes to npm. Locally, `cargo release 0.2.0` shows what it
+would do, without changing anything.
+
+It needs two repository secrets: `RELEASE_DEPLOY_KEY`, the private half of a
+deploy key with write access (a tag pushed with the default token would not
+start the Release workflow), and `NPM_TOKEN`, an npm token that can publish.
