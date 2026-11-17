@@ -2,6 +2,32 @@
 
 Builds `.env` files from templates, overrides and command-line values.
 
+## Install
+
+With npm:
+
+```sh
+npm i -g envik
+# or, without installing
+npx envik generate -i .env.example -o .env
+```
+
+With the installer script (macOS and Linux):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rhangai/envik/releases/latest/download/envik-installer.sh | sh
+```
+
+On Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/rhangai/envik/releases/latest/download/envik-installer.ps1 | iex"
+```
+
+Or download a binary from the [releases page](https://github.com/rhangai/envik/releases):
+Linux (x86_64, ARM64, and a static musl build), macOS (Intel and Apple
+Silicon) and Windows (x86_64).
+
 ## `envik generate`
 
 ```sh
