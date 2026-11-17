@@ -148,10 +148,12 @@ enum CliError {
     Generate(Vec<GeneratorError>),
 }
 
+/// Something the arguments point at — a file, an environment variable or
+/// the seed — that could not be read. Reported all together.
 #[derive(Debug, thiserror::Error)]
 enum InputError {
     #[error("{}: {source}", path.display())]
-    Read { path: PathBuf, source: io::Error },
+    FileRead { path: PathBuf, source: io::Error },
     #[error("`{0}` is not set in the environment")]
     EnvMissing(EnvKey),
     #[error("`{0}` in the environment is not valid UTF-8")]
@@ -272,7 +274,7 @@ fn read_inputs(args: &GenerateArgs, files: &[InputFile]) -> Result<Inputs, Vec<I
             // read is still an error.
             Err(error) if file.optional && error.kind() == io::ErrorKind::NotFound => {}
             Err(source) => {
-                errors.push(InputError::Read {
+                errors.push(InputError::FileRead {
                     path: file.path.clone(),
                     source,
                 });
@@ -401,7 +403,7 @@ fn read_seed_file(path: &Path, create: bool) -> Result<(String, Option<PathBuf>)
             let text = envik::new_seed_text().map_err(InputError::Random)?;
             Ok((text, Some(path.to_owned())))
         }
-        Err(source) => Err(InputError::Read {
+        Err(source) => Err(InputError::FileRead {
             path: path.to_owned(),
             source,
         }),
