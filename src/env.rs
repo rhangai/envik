@@ -1,7 +1,8 @@
 //! The model of a `.env` file: names, values and lines. [`parse`](crate::parse)
-//! builds it, [`merge`](crate::merge) and [`interpolate`](crate::interpolate)
-//! read the values, and [`render`](crate::render) writes the lines back.
+//! builds it, the [`Generator`](crate::Generator) resolves the values, and
+//! [`render`](crate::render) writes the lines back.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
 
@@ -129,6 +130,15 @@ pub struct EnvFile {
 }
 
 impl EnvFile {
+    /// Whether a commented `# KEY=` line offers `key`, so a value for it
+    /// turns that line on.
+    pub fn offers(&self, key: &EnvKey) -> bool {
+        self.lines.iter().any(|line| match line {
+            EnvFileLine::Entry(entry) => entry.key == *key && entry.state != EnvEntryState::Active,
+            EnvFileLine::Text(_) => false,
+        })
+    }
+
     /// The active `KEY=value` lines, in file order; commented ones are not
     /// values.
     pub fn entries(&self) -> impl Iterator<Item = (&EnvKey, &EnvValue)> {
@@ -188,6 +198,53 @@ impl EnvEntryState {
             EnvEntryState::Commented {
                 space_after_hash: true,
             } => "# ",
+        }
+    }
+}
+
+/// A value per key, plus the order in which keys first appeared. `V` is
+/// [`EnvValue`] before references are resolved and `String` after.
+///
+/// # Implementation
+///
+/// `order` and `values` hold the same keys; only [`EnvMap::set`] writes
+/// either, and [`EnvMap::iter`] indexes `values` relying on it.
+#[derive(Clone, Debug)]
+pub struct EnvMap<V> {
+    values: HashMap<EnvKey, V>,
+    order: Vec<EnvKey>,
+}
+
+impl<V> Default for EnvMap<V> {
+    fn default() -> Self {
+        EnvMap {
+            values: HashMap::new(),
+            order: Vec::new(),
+        }
+    }
+}
+
+impl<V> EnvMap<V> {
+    /// The value of `key`, if it has one.
+    pub fn get(&self, key: &EnvKey) -> Option<&V> {
+        self.values.get(key)
+    }
+
+    /// Keys in order of first appearance, each with its value.
+    pub fn iter(&self) -> impl Iterator<Item = (&EnvKey, &V)> {
+        self.order.iter().map(|key| (key, &self.values[key]))
+    }
+
+    /// Later calls win; the first call fixes the key's position.
+    pub fn set(&mut self, key: &EnvKey, value: V) {
+        match self.values.get_mut(key) {
+            Some(slot) => {
+                *slot = value;
+            }
+            None => {
+                self.order.push(key.clone());
+                self.values.insert(key.clone(), value);
+            }
         }
     }
 }
