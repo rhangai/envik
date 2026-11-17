@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [0.3.0] - 2026-11-17
+
+### Features
+
+- **generate:** Replace existing keys from environment variables with a prefix
+
+### Refactor
+
+- **generate:** Replace the generate function with a Generator
+
 ## [0.2.0] - 2026-11-17
 
 ### Features
