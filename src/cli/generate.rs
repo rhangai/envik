@@ -12,7 +12,7 @@ use clap::{ArgGroup, ArgMatches, Args};
 
 use envik::{EnvKey, Generator, GeneratorError, ParseError, Seed, Source};
 
-use crate::util::write::{create_private, write_atomically};
+use crate::util::write::create_private;
 
 #[derive(Args)]
 #[command(group(ArgGroup::new("seed").multiple(false)))]
@@ -203,7 +203,9 @@ pub fn run(args: &GenerateArgs, matches: &ArgMatches) -> Result<(), GenerateErro
         })?;
     }
     match &args.output {
-        Some(path) => write_atomically(path, &out).map_err(|source| GenerateError::Write {
+        // Over the existing file, not a renamed copy: its permissions, owner
+        // and any symlink to it stay as they were.
+        Some(path) => fs::write(path, &out).map_err(|source| GenerateError::Write {
             path: path.clone(),
             source,
         })?,
