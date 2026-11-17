@@ -1,5 +1,5 @@
 //! Command line: argument parsing and all of the I/O. The merging itself is
-//! [`envik::generate`], which never touches the disk.
+//! [`envik::Generator`], which never touches the disk.
 
 use std::env;
 use std::ffi::OsString;
@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{ArgGroup, ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use envik::{EnvKey, Generator, GeneratorError, ParseError, Seed, Source};
 
@@ -30,9 +30,14 @@ enum Command {
 #[command(group(ArgGroup::new("seed").multiple(false)))]
 struct GenerateArgs {
     /// Input file; repeat for more. Later files override earlier ones. The
-    /// first one is the layout template (comments, order, blank lines).
+    /// first one read is the layout template (comments, order, blank lines).
     #[arg(short, long = "input", value_name = "FILE", required = true)]
     input: Vec<PathBuf>,
+
+    /// Like -i, but skipped when the file does not exist. Takes its place
+    /// among the -i in the order given.
+    #[arg(short = 'I', long = "input-optional", value_name = "FILE")]
+    input_optional: Vec<PathBuf>,
 
     /// KEY=VALUE, or KEY to take its value from the environment; repeat for
     /// more. Always overrides the files, and is taken literally.
@@ -101,9 +106,15 @@ fn parse_override(arg: &str) -> Result<Override, String> {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // The raw matches too: they say where each -i and -I sat on the command
+    // line, which the parsed fields lose.
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let result = match cli.command {
-        Command::Generate(args) => generate(&args),
+        Command::Generate(args) => {
+            let (_, generate_matches) = matches.subcommand().expect("a subcommand is required");
+            generate(&args, &input_files(&args, generate_matches))
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -159,12 +170,43 @@ fn one_per_line<T: std::fmt::Display>(errors: &[T]) -> String {
         .join("\n")
 }
 
-fn generate(args: &GenerateArgs) -> Result<(), CliError> {
-    let inputs = read_inputs(args).map_err(CliError::Input)?;
-    let sources: Vec<Source<'_>> = args
-        .input
+/// One `-i` or `-I`.
+struct InputFile {
+    path: PathBuf,
+    /// `-I`: skipped when the file does not exist.
+    optional: bool,
+    /// Where it sat on the command line, to put `-i` and `-I` back in order.
+    position: usize,
+}
+
+/// Every `-i` and `-I`, in the order they were given.
+fn input_files(args: &GenerateArgs, matches: &ArgMatches) -> Vec<InputFile> {
+    let mut files = Vec::with_capacity(args.input.len() + args.input_optional.len());
+    let positions = matches.indices_of("input").into_iter().flatten();
+    for (path, position) in args.input.iter().zip(positions) {
+        files.push(InputFile {
+            path: path.clone(),
+            optional: false,
+            position,
+        });
+    }
+    let positions = matches.indices_of("input_optional").into_iter().flatten();
+    for (path, position) in args.input_optional.iter().zip(positions) {
+        files.push(InputFile {
+            path: path.clone(),
+            optional: true,
+            position,
+        });
+    }
+    files.sort_by_key(|file| file.position);
+    files
+}
+
+fn generate(args: &GenerateArgs, files: &[InputFile]) -> Result<(), CliError> {
+    let inputs = read_inputs(args, files).map_err(CliError::Input)?;
+    let sources: Vec<Source<'_>> = inputs
+        .contents
         .iter()
-        .zip(&inputs.contents)
         .map(|(origin, contents)| Source { origin, contents })
         .collect();
     let mut generator = Generator::new(&sources).map_err(CliError::Parse)?;
@@ -201,8 +243,9 @@ fn generate(args: &GenerateArgs) -> Result<(), CliError> {
 
 /// Everything the library is handed, read from disk and the environment.
 struct Inputs {
-    /// One per `-i`, in the same order.
-    contents: Vec<String>,
+    /// Every `-i` and every `-I` that exists, in the order given, with its
+    /// path.
+    contents: Vec<(PathBuf, String)>,
     /// One per `-e`, in the same order, `-e KEY` already looked up.
     env_flags: Vec<(EnvKey, String)>,
     /// From `--env-override-prefix`, sorted by key; values not yet checked
@@ -214,18 +257,26 @@ struct Inputs {
     new_seed_file: Option<NewSeedFile>,
 }
 
-/// Reads every `-i` file, looks up every `-e KEY` and reads the seed; on
-/// failure, returns every reason an input could not be read.
-fn read_inputs(args: &GenerateArgs) -> Result<Inputs, Vec<InputError>> {
+/// Reads every `-i` file and every `-I` that exists, looks up every
+/// `-e KEY` and reads the seed; on failure, returns every reason an input
+/// could not be read.
+fn read_inputs(args: &GenerateArgs, files: &[InputFile]) -> Result<Inputs, Vec<InputError>> {
     let mut errors = Vec::new();
-    let mut contents = Vec::with_capacity(args.input.len());
-    for path in &args.input {
-        match fs::read_to_string(path) {
-            Ok(text) => contents.push(text),
-            Err(source) => errors.push(InputError::Read {
-                path: path.clone(),
-                source,
-            }),
+    let mut contents = Vec::with_capacity(files.len());
+    for file in files {
+        match fs::read_to_string(&file.path) {
+            Ok(text) => {
+                contents.push((file.path.clone(), text));
+            }
+            // Only a missing file is optional: one that exists but cannot be
+            // read is still an error.
+            Err(error) if file.optional && error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                errors.push(InputError::Read {
+                    path: file.path.clone(),
+                    source,
+                });
+            }
         }
     }
     let mut env_flags = Vec::with_capacity(args.env.len());
