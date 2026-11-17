@@ -139,6 +139,10 @@ pub enum GeneratorError {
     /// `key`'s value calls `rand`, and no seed was given.
     #[error("`{key}`: `$(rand ...)` needs a seed")]
     NoSeed { key: EnvKey },
+    /// `key`'s final value still has a `$(required)`: no source after the
+    /// one that wrote it replaced it. `value` is that value, for context.
+    #[error("`{key}` is required: `{value}`")]
+    Required { key: EnvKey, value: EnvValue },
     /// Keys that reference each other in a loop; the first is repeated last.
     #[error("circular reference: {}", Chain(.chain))]
     Cycle { chain: Vec<EnvKey> },
@@ -252,6 +256,7 @@ impl<'a> Resolver<'a> {
         let mut ok = true;
         let mut calls = 0;
         let mut no_seed_reported = false;
+        let mut required_reported = false;
         for part in value.parts() {
             match part {
                 EnvValuePart::Literal(literal) => {
@@ -278,6 +283,17 @@ impl<'a> Resolver<'a> {
                         continue;
                     };
                     text.push_str(&seed.rand(key, index, *len));
+                }
+                EnvValuePart::Call(EnvCall::Required) => {
+                    ok = false;
+                    // One error per key, however many it has.
+                    if !required_reported {
+                        self.errors.push(GeneratorError::Required {
+                            key: key.clone(),
+                            value: value.clone(),
+                        });
+                        required_reported = true;
+                    }
                 }
             }
         }
@@ -506,5 +522,57 @@ mod tests {
                 pair("URL", "http://new${Y}")
             ],
         );
+    }
+
+    /// `generate`'s errors, as text.
+    fn errors(generator: &Generator) -> Vec<String> {
+        let errors = generator.generate().unwrap_err();
+        errors.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn required_is_an_error_until_replaced() {
+        let template = concat!(
+            "DEBUG=$(required)\n",
+            "URL=https://$(required)/\n",
+            "KEY=$(required) get one at https://example.com/keys\n",
+            "FULL=${URL}x\n",
+            "TWO=$(required)-$(required)\n",
+        );
+
+        // One error per key, with its whole template value; `FULL` fails
+        // only because `URL` did, so it adds nothing.
+        assert_eq!(
+            errors(&generator(&[template])),
+            [
+                "`DEBUG` is required: `$(required)`",
+                "`URL` is required: `https://$(required)/`",
+                "`KEY` is required: `$(required) get one at https://example.com/keys`",
+                "`TWO` is required: `$(required)-$(required)`",
+            ],
+        );
+
+        // A later file, an env flag and an env override each replace one.
+        let mut generator = generator(&[template, "URL=https://example.com/\n"]);
+        generator.env_flag(key("DEBUG"), "1".to_owned());
+        generator.env_flag(key("KEY"), "k".to_owned());
+        generator.env_override(key("TWO"), "x".into());
+        let pair = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+        assert_eq!(
+            texts(&generator),
+            [
+                pair("DEBUG", "1"),
+                pair("URL", "https://example.com/"),
+                pair("KEY", "k"),
+                pair("FULL", "https://example.com/x"),
+                pair("TWO", "x"),
+            ],
+        );
+    }
+
+    #[test]
+    fn required_on_an_optional_line_is_dropped() {
+        let generator = generator(&["A=1\n# OPT=$(required)\n"]);
+        assert_eq!(generator.generate().unwrap(), "A=1\n");
     }
 }

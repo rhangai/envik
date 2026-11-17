@@ -64,6 +64,19 @@ pub enum EnvValuePart {
 pub enum EnvCall {
     /// `$(rand len)`: `len` characters, 1 to [`MAX_RAND_LEN`].
     Rand { len: usize },
+    /// `$(required)`: an error unless a later source replaces the value.
+    Required,
+}
+
+impl fmt::Display for EnvCall {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EnvCall::Rand { len } => {
+                write!(f, "$(rand {len})")
+            }
+            EnvCall::Required => f.write_str("$(required)"),
+        }
+    }
 }
 
 /// Longest `$(rand n)`: a guard against a typo asking for megabytes.
@@ -74,6 +87,36 @@ pub const MAX_RAND_LEN: usize = 1024;
 /// parts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnvValue(Vec<EnvValuePart>);
+
+/// The value as a template writes it, without quotes or escapes: for error
+/// messages, not to be read back.
+impl fmt::Display for EnvValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for part in &self.0 {
+            match part {
+                EnvValuePart::Literal(text) => {
+                    f.write_str(text)?;
+                }
+                EnvValuePart::Ref {
+                    name,
+                    default: None,
+                } => {
+                    write!(f, "${{{name}}}")?;
+                }
+                EnvValuePart::Ref {
+                    name,
+                    default: Some(default),
+                } => {
+                    write!(f, "${{{name}:-{default}}}")?;
+                }
+                EnvValuePart::Call(call) => {
+                    write!(f, "{call}")?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
 impl EnvValue {
     /// A value with no references: `'...'` and `-e` produce these.

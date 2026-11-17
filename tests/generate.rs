@@ -877,3 +877,33 @@ fn optional_input_still_fails_when_unreadable() {
     assert_eq!(fs::read_to_string(&out).unwrap(), "OLD=1\n");
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn required_needs_a_value() {
+    let dir = scratch("required_needs_a_value");
+    let template = dir.join("a.env");
+    let out = dir.join(".env");
+    fs::write(&template, "DEBUG=$(required)\nPORT=3000\n").unwrap();
+    fs::write(&out, "OLD=1\n").unwrap();
+
+    let run = envik(&["generate", "-i", path(&template), "-o", path(&out)]);
+    assert!(!run.status.success(), "succeeded");
+    assert_eq!(
+        String::from_utf8(run.stderr).unwrap(),
+        "envik: `DEBUG` is required: `$(required)`\n\
+         envik: set it with -e KEY=VALUE, a later -i, or --env-override-prefix\n",
+    );
+    assert_eq!(fs::read_to_string(&out).unwrap(), "OLD=1\n");
+
+    let run = envik(&["generate", "-i", path(&template), "-e", "DEBUG=1"]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        "DEBUG=1\nPORT=3000\n"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
