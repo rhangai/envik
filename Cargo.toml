@@ -2,6 +2,9 @@
 name = "envik"
 version = "0.1.0"
 edition = "2024"
+description = "Builds .env files from templates, overrides and command-line values."
+repository = "https://github.com/rhangai/envik"
+license = "MIT"
 
 [dependencies]
 blake3 = "1.8.7"
