@@ -13,6 +13,10 @@ installers = ["shell", "powershell", "npm"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
+# Published as @envik/cli: the npm registry refuses a bare "envik" as too
+# similar to "envify". The installed command is still `envik`.
+npm-scope = "@envik"
+npm-package = "cli"
 # Publish the npm package (needs the NPM_TOKEN secret)
 publish-jobs = ["npm"]
 # Where to host releases

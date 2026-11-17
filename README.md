@@ -7,9 +7,9 @@ Builds `.env` files from templates, overrides and command-line values.
 With npm:
 
 ```sh
-npm i -g envik
+npm i -g @envik/cli
 # or, without installing
-npx envik generate -i .env.example -o .env
+npx @envik/cli generate -i .env.example -o .env
 ```
 
 With the installer script (macOS and Linux):
