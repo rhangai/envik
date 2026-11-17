@@ -61,6 +61,8 @@ fn merges_files_and_env_args() {
          # Banco\n\
          DB_URL=postgres://localhost/app\n\
          LOG_LEVEL=debug\n\
+         \n\
+         # ----\n\
          EXTRA=2\n",
     );
     fs::remove_dir_all(&dir).unwrap();
@@ -249,6 +251,8 @@ fn literal_values_never_expand() {
         String::from_utf8(run.stdout).unwrap(),
         "LIT='${X}'\n\
          PORT='a${VAR}'\n\
+         \n\
+         # ----\n\
          VAR=123\n",
     );
     fs::remove_dir_all(&dir).unwrap();
@@ -542,7 +546,7 @@ fn rand_errors_and_literals() {
     );
     assert_eq!(
         String::from_utf8(run.stdout).unwrap(),
-        "L='$(rand 8)'\nX='$(rand 8)'\n"
+        "L='$(rand 8)'\n\n# ----\nX='$(rand 8)'\n"
     );
     fs::remove_dir_all(&dir).unwrap();
 }
