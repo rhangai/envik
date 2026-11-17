@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [0.3.1] - 2026-11-17
+
+### Fixes
+
+- **generate:** Leave ? unquoted and always end the output with a newline
+
 ## [0.3.0] - 2026-11-17
 
 ### Features
