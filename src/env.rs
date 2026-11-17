@@ -20,7 +20,7 @@ impl EnvKey {
     }
 
     /// Whether `name` matches `[A-Za-z_][A-Za-z0-9_]*`.
-    pub fn is_valid(name: &str) -> bool {
+    fn is_valid(name: &str) -> bool {
         let mut chars = name.chars();
         let Some(first) = chars.next() else {
             // An empty name.

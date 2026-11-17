@@ -499,9 +499,12 @@ impl<'a> Cursor<'a> {
         if function != "rand" {
             return Err(ValueError::UnknownFunction(function.to_owned()));
         }
-        let (Some(len), None) = (words.next(), words.next()) else {
+        let Some(len) = words.next() else {
             return Err(invalid());
         };
+        if words.next().is_some() {
+            return Err(invalid());
+        }
         let Ok(len) = len.parse::<usize>() else {
             return Err(invalid());
         };

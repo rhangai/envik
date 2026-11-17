@@ -3,7 +3,6 @@
 //! disk.
 
 mod cli;
-mod util;
 
 use std::process::ExitCode;
 

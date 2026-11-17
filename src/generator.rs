@@ -137,7 +137,7 @@ pub enum GeneratorError {
     #[error("`{key}`: `${{{name}}}` is not set")]
     Missing { key: EnvKey, name: EnvKey },
     /// `key`'s value calls `rand`, and no seed was given.
-    #[error("`{key}`: `$(rand ...)` needs a seed (--seed-value, --seed-file or --seed-env)")]
+    #[error("`{key}`: `$(rand ...)` needs a seed")]
     NoSeed { key: EnvKey },
     /// Keys that reference each other in a loop; the first is repeated last.
     #[error("circular reference: {}", Chain(.chain))]

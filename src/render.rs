@@ -93,7 +93,7 @@ fn push_with_final_value(out: &mut String, entry: &EnvEntry, final_text: &str) {
         return;
     }
     out.push_str(&entry.raw[start..entry.span.start]);
-    write_literal(final_text, out);
+    push_literal(out, final_text);
     out.push_str(&entry.raw[entry.span.end..]);
 }
 
@@ -101,7 +101,7 @@ fn push_with_final_value(out: &mut String, entry: &EnvEntry, final_text: &str) {
 fn push_entry(out: &mut String, key: &EnvKey, text: &str) {
     out.push_str(key.as_str());
     out.push('=');
-    write_literal(text, out);
+    push_literal(out, text);
     out.push('\n');
 }
 
@@ -109,7 +109,7 @@ fn push_entry(out: &mut String, key: &EnvKey, text: &str) {
 /// literal: bare when every character is safe; otherwise in single quotes,
 /// where nothing is special; and in double quotes with escapes only when it
 /// holds a `'` or a newline, which single quotes cannot.
-fn write_literal(text: &str, out: &mut String) {
+fn push_literal(out: &mut String, text: &str) {
     if text.chars().all(is_safe_bare) {
         out.push_str(text);
     } else if !text.contains(['\'', '\n']) {

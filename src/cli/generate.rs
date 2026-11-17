@@ -12,8 +12,6 @@ use clap::{ArgGroup, ArgMatches, Args};
 
 use envik::{EnvKey, Generator, GeneratorError, ParseError, Seed, Source};
 
-use crate::util::write::create_private;
-
 #[derive(Args)]
 #[command(group(ArgGroup::new("seed").multiple(false)))]
 pub struct GenerateArgs {
@@ -105,13 +103,13 @@ pub enum GenerateError {
     #[error("{}", one_per_line(.0))]
     Parse(Vec<ParseError>),
     /// The `-o` file, or the seed file being created.
-    #[error("{}: {source}", path.display())]
+    #[error("cannot write {}: {source}", path.display())]
     Write { path: PathBuf, source: io::Error },
     /// The output, without `-o`.
     #[error("stdout: {0}")]
     Stdout(io::Error),
     /// Every reason the generation could not finish.
-    #[error("{}", one_per_line(.0))]
+    #[error("{}", generator_errors(.0))]
     Generate(Vec<GeneratorError>),
 }
 
@@ -119,7 +117,7 @@ pub enum GenerateError {
 /// the seed — that could not be read. Reported all together.
 #[derive(Debug, thiserror::Error)]
 pub enum InputError {
-    #[error("{}: {source}", path.display())]
+    #[error("cannot read {}: {source}", path.display())]
     FileRead { path: PathBuf, source: io::Error },
     #[error("`{0}` is not set in the environment")]
     EnvMissing(EnvKey),
@@ -131,12 +129,27 @@ pub enum InputError {
     Random(getrandom::Error),
 }
 
-fn one_per_line<T: std::fmt::Display>(errors: &[T]) -> String {
+fn one_per_line<T>(errors: &[T]) -> String
+where
+    T: std::fmt::Display,
+{
     errors
         .iter()
         .map(T::to_string)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The generation's errors, with what to do about a missing seed.
+fn generator_errors(errors: &[GeneratorError]) -> String {
+    let mut text = one_per_line(errors);
+    let needs_seed = errors
+        .iter()
+        .any(|error| matches!(error, GeneratorError::NoSeed { .. }));
+    if needs_seed {
+        text.push_str("\ngive a seed with --seed-value, --seed-file or --seed-env");
+    }
+    text
 }
 
 /// One `-i` or `-I`.
@@ -152,7 +165,7 @@ struct InputFile {
 /// Every `-i` and `-I`, in the order they were given.
 fn input_files(args: &GenerateArgs, matches: &ArgMatches) -> Vec<InputFile> {
     let mut files = Vec::with_capacity(args.input.len() + args.input_optional.len());
-    let positions = matches.indices_of("input").into_iter().flatten();
+    let positions = positions_of(matches, "input");
     for (path, position) in args.input.iter().zip(positions) {
         files.push(InputFile {
             path: path.clone(),
@@ -160,7 +173,7 @@ fn input_files(args: &GenerateArgs, matches: &ArgMatches) -> Vec<InputFile> {
             position,
         });
     }
-    let positions = matches.indices_of("input_optional").into_iter().flatten();
+    let positions = positions_of(matches, "input_optional");
     for (path, position) in args.input_optional.iter().zip(positions) {
         files.push(InputFile {
             path: path.clone(),
@@ -170,6 +183,22 @@ fn input_files(args: &GenerateArgs, matches: &ArgMatches) -> Vec<InputFile> {
     }
     files.sort_by_key(|file| file.position);
     files
+}
+
+/// Where each value of the argument `id` sat on the command line; none when
+/// it was not given. An `id` that names no argument panics, in a release
+/// build too, rather than dropping every file silently.
+fn positions_of(matches: &ArgMatches, id: &str) -> Vec<usize> {
+    let given = matches
+        .try_contains_id(id)
+        .expect("`input` and `input_optional` are generate arguments");
+    if !given {
+        return Vec::new();
+    }
+    matches
+        .indices_of(id)
+        .expect("an argument that was given has positions")
+        .collect()
 }
 
 /// Runs `envik generate`. `matches` are its raw matches, for where each `-i`
@@ -189,30 +218,39 @@ pub fn run(args: &GenerateArgs, matches: &ArgMatches) -> Result<(), GenerateErro
     for (key, value) in inputs.env_overrides {
         generator.env_override(key, value);
     }
-    if let Some(seed) = inputs.seed {
-        generator.seed(seed);
+    if let Some(seed) = &inputs.seed {
+        generator.seed(seed.seed.clone());
     }
     let out = generator.generate().map_err(GenerateError::Generate)?;
     // Before the output: a written .env must never rely on a seed that was
     // not saved.
-    if let Some(NewSeedFile { path, text }) = &inputs.new_seed_file {
+    if let Some(seed) = &inputs.seed
+        && let Some(file) = &seed.new_file
+    {
         // The newline makes it a text file; reading it back strips it.
-        create_private(path, &format!("{text}\n")).map_err(|source| GenerateError::Write {
-            path: path.clone(),
+        let contents = format!("{}\n", file.text);
+        create_private(&file.path, &contents).map_err(|source| GenerateError::Write {
+            path: file.path.clone(),
             source,
         })?;
     }
     match &args.output {
-        // Over the existing file, not a renamed copy: its permissions, owner
-        // and any symlink to it stay as they were.
-        Some(path) => fs::write(path, &out).map_err(|source| GenerateError::Write {
-            path: path.clone(),
-            source,
-        })?,
-        None => io::stdout()
-            .lock()
-            .write_all(out.as_bytes())
-            .map_err(GenerateError::Stdout)?,
+        Some(path) => {
+            // Over the existing file, not a renamed copy: its permissions,
+            // owner and any symlink to it stay as they were.
+            fs::write(path, &out).map_err(|source| GenerateError::Write {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        None => {
+            let mut stdout = io::stdout().lock();
+            stdout
+                .write_all(out.as_bytes())
+                .map_err(GenerateError::Stdout)?;
+            // Here, not at exit, where a failed flush is silently lost.
+            stdout.flush().map_err(GenerateError::Stdout)?;
+        }
     }
     Ok(())
 }
@@ -228,9 +266,7 @@ struct Inputs {
     /// for UTF-8, since only the ones used must be.
     env_overrides: Vec<(EnvKey, OsString)>,
     /// From `--seed-value`, `--seed-env` or `--seed-file`, when one was given.
-    seed: Option<Seed>,
-    /// Written only after the generation succeeds.
-    new_seed_file: Option<NewSeedFile>,
+    seed: Option<SeedInput>,
 }
 
 /// Reads every `-i` file and every `-I` that exists, looks up every
@@ -266,18 +302,13 @@ fn read_inputs(args: &GenerateArgs, files: &[InputFile]) -> Result<Inputs, Vec<I
         Some(prefix) => read_env_overrides(prefix),
         None => Vec::new(),
     };
-    let mut seed = None;
-    let mut new_seed_file = None;
-    match read_seed(args) {
-        Ok(None) => {}
-        Ok(Some(input)) => {
-            seed = Some(input.seed);
-            new_seed_file = input.new_file;
-        }
+    let seed = match read_seed(args) {
+        Ok(seed) => seed,
         Err(error) => {
             errors.push(error);
+            None
         }
-    }
+    };
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -286,7 +317,6 @@ fn read_inputs(args: &GenerateArgs, files: &[InputFile]) -> Result<Inputs, Vec<I
         env_flags,
         env_overrides,
         seed,
-        new_seed_file,
     })
 }
 
@@ -382,4 +412,15 @@ fn read_seed_file(path: &Path, create: bool) -> Result<(String, Option<PathBuf>)
             source,
         }),
     }
+}
+
+/// Creates `path` with `contents`, readable by its owner only, failing if it
+/// already exists rather than replacing it.
+fn create_private(path: &Path, contents: &str) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    file.write_all(contents.as_bytes())
 }

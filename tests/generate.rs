@@ -661,7 +661,7 @@ fn seed_from_env() {
     assert_eq!(
         String::from_utf8(run.stderr).unwrap(),
         format!(
-            "envik: {}: No such file or directory (os error 2)\n\
+            "envik: cannot read {}: No such file or directory (os error 2)\n\
              envik: `ENVIK_SEED` is not set in the environment\n",
             path(&missing)
         ),
