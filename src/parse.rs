@@ -22,7 +22,8 @@
 //! dollar    = "{" reference | "(" call | ""  ; a lone "$" is text
 //! reference = key "}" | key ":-" default "}"
 //! default   = { char }                    ; no "${" or "$(" inside
-//! call      = blanks "rand" blanks digits blanks ")"   ; words, like a shell
+//! call      = blanks ( "rand" blanks digits | "required" ) blanks ")"
+//!                                         ; words, like a shell
 //! escape    = "n" | '"' | "\" | "$"
 //! ```
 //!
@@ -85,9 +86,11 @@ pub enum ValueError {
     NestedRef,
     #[error("unclosed `$(`")]
     UnclosedCall,
-    #[error("unknown function `{0}` (only `rand` exists)")]
+    #[error("unknown function `{0}` (only `rand` and `required` exist)")]
     UnknownFunction(String),
-    #[error("invalid call `$({0})` (expected `$(rand n)` with n from 1 to {MAX_RAND_LEN})")]
+    #[error(
+        "invalid call `$({0})` (expected `$(rand n)` with n from 1 to {MAX_RAND_LEN}, or `$(required)`)"
+    )]
     InvalidCall(String),
 }
 
@@ -496,6 +499,12 @@ impl<'a> Cursor<'a> {
         let Some(function) = words.next() else {
             return Err(invalid());
         };
+        if function == "required" {
+            if words.next().is_some() {
+                return Err(invalid());
+            }
+            return Ok(EnvCall::Required);
+        }
         if function != "rand" {
             return Err(ValueError::UnknownFunction(function.to_owned()));
         }
@@ -651,6 +660,12 @@ mod tests {
 
     #[test]
     fn references_and_calls() {
+        let mut required = EnvValue::default();
+        required.push_str("http://");
+        required.push_call(EnvCall::Required);
+        required.push_str("/data");
+        assert_eq!(value("http://$( required )/data"), required);
+
         let mut url = EnvValue::default();
         url.push_str("http://");
         url.push_ref(key("HOST"), Some("localhost".to_owned()));
@@ -731,18 +746,25 @@ mod tests {
                 "a default cannot contain `${...}` or `$(...)`",
             ),
             ("$(rand 8", "unclosed `$(`"),
-            ("$(nope 1)", "unknown function `nope` (only `rand` exists)"),
+            (
+                "$(nope 1)",
+                "unknown function `nope` (only `rand` and `required` exist)",
+            ),
+            (
+                "$(required x)",
+                "invalid call `$(required x)` (expected `$(rand n)` with n from 1 to 1024, or `$(required)`)",
+            ),
             (
                 "$(rand 0)",
-                "invalid call `$(rand 0)` (expected `$(rand n)` with n from 1 to 1024)",
+                "invalid call `$(rand 0)` (expected `$(rand n)` with n from 1 to 1024, or `$(required)`)",
             ),
             (
                 "$(rand)",
-                "invalid call `$(rand)` (expected `$(rand n)` with n from 1 to 1024)",
+                "invalid call `$(rand)` (expected `$(rand n)` with n from 1 to 1024, or `$(required)`)",
             ),
             (
                 "$(rand 8 9)",
-                "invalid call `$(rand 8 9)` (expected `$(rand n)` with n from 1 to 1024)",
+                "invalid call `$(rand 8 9)` (expected `$(rand n)` with n from 1 to 1024, or `$(required)`)",
             ),
         ] {
             let error = read_value(text).unwrap_err();

@@ -15,6 +15,11 @@ settled them. Reopening one needs a new reason, not the old argument again.
   longer be confused with a reference: after `$`, `{` is a reference and `(`
   a call. `{{rand 32}}` was rejected: `{{` is common literal text in values
   (templates, JSON).
+- **`$(required)` marks a value that must come from a later source.** It
+  is a call rather than the shell's `${VAR:?message}`, because
+  `KEY=${KEY:?…}` would be a key referencing itself, a cycle here. It takes
+  no message: the error shows the whole template value, so text around it
+  (`$(required) get one at …`) explains itself.
 - **`${NAME:-default}` takes the default when `NAME` is unset or empty**,
   like the shell and docker compose. Defaults are literal; a nested `${...}`
   or `$(...)` in a default is an error. A `#` inside `${...}` is text.

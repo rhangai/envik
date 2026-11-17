@@ -140,7 +140,8 @@ where
         .join("\n")
 }
 
-/// The generation's errors, with what to do about a missing seed.
+/// The generation's errors, with what to do about a missing seed or a
+/// required value.
 fn generator_errors(errors: &[GeneratorError]) -> String {
     let mut text = one_per_line(errors);
     let needs_seed = errors
@@ -148,6 +149,12 @@ fn generator_errors(errors: &[GeneratorError]) -> String {
         .any(|error| matches!(error, GeneratorError::NoSeed { .. }));
     if needs_seed {
         text.push_str("\ngive a seed with --seed-value, --seed-file or --seed-env");
+    }
+    let needs_value = errors
+        .iter()
+        .any(|error| matches!(error, GeneratorError::Required { .. }));
+    if needs_value {
+        text.push_str("\nset it with -e KEY=VALUE, a later -i, or --env-override-prefix");
     }
     text
 }

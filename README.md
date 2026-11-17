@@ -149,6 +149,29 @@ gives `URL=https://site:123`, `BASE=site:123` and `LOG=info`.
 - Nothing expands inside `'...'`, `$NAME` without braces stays as it is, and
   values given with `-e` are always literal.
 
+## Required values
+
+```sh
+DB_PASS=$(required)
+API_URL=https://$(required)/v1
+API_KEY=$(required) get one at https://example.com/keys
+```
+
+`$(required)` marks a value someone has to give. If no later source replaces
+it (a later `-i` or `-I`, an `-e`, or `--env-override-prefix`), `generate`
+fails and shows each one with its value from the template, so the text around
+it can say what's expected:
+
+```
+envik: `DB_PASS` is required: `$(required)`
+envik: `API_KEY` is required: `$(required) get one at https://example.com/keys`
+envik: set it with -e KEY=VALUE, a later -i, or --env-override-prefix
+```
+
+It can sit anywhere in a value, takes no arguments, and does nothing inside
+`'...'`. On an optional `# KEY=$(required)` line that nothing sets, the line
+is just left out.
+
 ## Generated secrets
 
 ```sh
