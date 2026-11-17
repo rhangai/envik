@@ -44,8 +44,8 @@ envik generate -i .env.example -i .env.override -e PORT=445 -o .env
 
 **Precedence.** The `-i` and `-I` files apply in the order given, later ones
 winning.
-Every `-e` applies after all files and always wins, wherever it sits on the
-command line.
+Every `-e` applies after all files and wins over them, wherever it sits on
+the command line. Only `--env-override-prefix` wins over `-e`.
 
 **Layout.** The first file read (`-i`, or an `-I` that exists) is the
 template: its comments, blank lines and key
@@ -79,10 +79,10 @@ EXTRA=2
 Anything looser is plain text and never touched: `# DEBUG` (no `=`),
 `#  DEBUG=` (two spaces), an indented `  # DEBUG=`.
 
-**Errors.** A missing input, an invalid line, an invalid `-e` or an `-e KEY`
-that is not in your environment prints an error and exits non-zero. An empty
-variable (`PORT=`) is a value, not an error. Nothing is written: an existing output file stays
-as it was.
+**Errors.** A missing `-i` file, a file that can't be read, an invalid line,
+an invalid `-e` or an `-e KEY` that is not in your environment prints an error
+and exits non-zero. An empty variable (`PORT=`) is a value, not an error.
+Nothing is written: an existing output file stays as it was.
 
 ## CI secrets
 
@@ -158,9 +158,9 @@ APP_SECRET=$(rand 32)
 `$(rand n)` writes `n` characters (1 to 1024) from `A-Z a-z 0-9 - _`. They
 look random, but they come from a seed, so running `generate` again gives the
 same secrets and nothing gets rotated by accident. The value depends only on
-the seed, the variable's name and which `rand` it is inside that value:
-adding or moving other lines never changes it. Two variables never get the
-same value, and `OTHER=${APP_SECRET}` copies it.
+the seed, the variable's name, `n` and which `rand` it is inside that value:
+adding or moving other lines never changes it. Each variable gets its own
+value, and `OTHER=${APP_SECRET}` copies it.
 
 Give the seed one way, at most:
 

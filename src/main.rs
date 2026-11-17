@@ -1,4 +1,4 @@
-//! Command line: argument parsing and all of the I/O. The merging itself is
+//! Command line: argument parsing and all of the I/O. The generation itself is
 //! [`envik::Generator`], which never touches the disk.
 
 use std::env;
@@ -174,6 +174,7 @@ fn one_per_line<T: std::fmt::Display>(errors: &[T]) -> String {
 
 /// One `-i` or `-I`.
 struct InputFile {
+    /// As given on the command line.
     path: PathBuf,
     /// `-I`: skipped when the file does not exist.
     optional: bool,

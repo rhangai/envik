@@ -144,6 +144,7 @@ pub enum GeneratorError {
     Cycle { chain: Vec<EnvKey> },
 }
 
+/// A cycle's keys as `A → B → A`, for [`GeneratorError::Cycle`].
 struct Chain<'a>(&'a [EnvKey]);
 
 impl fmt::Display for Chain<'_> {
@@ -198,6 +199,7 @@ enum State {
 struct Resolver<'a> {
     /// Every key's value, env overrides already applied.
     values: &'a EnvMap<EnvValue>,
+    /// `None`: every `$(rand n)` is a [`GeneratorError::NoSeed`].
     seed: Option<&'a Seed>,
     /// Keys met so far; one with no entry has not been visited.
     state: HashMap<&'a EnvKey, State>,
