@@ -25,8 +25,8 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/rhangai/envik/rele
 ```
 
 Or download a binary from the [releases page](https://github.com/rhangai/envik/releases):
-Linux (x86_64, ARM64, and a static musl build), macOS (Intel and Apple
-Silicon) and Windows (x86_64).
+Linux (x86_64 and ARM64, static, so they run on any distro, including Alpine
+and NixOS), macOS (Intel and Apple Silicon) and Windows (x86_64).
 
 ## `envik generate`
 
