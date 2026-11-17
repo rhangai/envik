@@ -42,12 +42,12 @@ struct GenerateArgs {
     #[arg(short, long = "output", value_name = "FILE")]
     output: Option<PathBuf>,
 
-    /// Seed for ${rand(n)}, given here. It stays in your shell history: use
+    /// Seed for $(rand n), given here. It stays in your shell history: use
     /// it locally.
     #[arg(long, value_name = "TEXT", group = "seed", allow_hyphen_values = true)]
     seed_value: Option<String>,
 
-    /// Seed for ${rand(n)}, read from FILE. Keep the file out of git.
+    /// Seed for $(rand n), read from FILE. Keep the file out of git.
     #[arg(long, value_name = "FILE", group = "seed")]
     seed_file: Option<PathBuf>,
 
@@ -56,7 +56,7 @@ struct GenerateArgs {
     #[arg(long, requires = "seed_file")]
     seed_file_create: bool,
 
-    /// Seed for ${rand(n)}, read from the environment variable VAR.
+    /// Seed for $(rand n), read from the environment variable VAR.
     #[arg(long, value_name = "VAR", group = "seed", value_parser = parse_env_name)]
     seed_env: Option<EnvKey>,
 }

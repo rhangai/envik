@@ -16,7 +16,7 @@ pub enum InterpolateError {
     #[error("`{key}`: `${{{name}}}` is not set")]
     Missing { key: EnvKey, name: EnvKey },
     /// `key`'s value calls `rand`, and no seed was given.
-    #[error("`{key}`: `${{rand(...)}}` needs a seed (--seed-value, --seed-file or --seed-env)")]
+    #[error("`{key}`: `$(rand ...)` needs a seed (--seed-value, --seed-file or --seed-env)")]
     NoSeed { key: EnvKey },
     /// Keys that reference each other in a loop; the first is repeated last.
     #[error("circular reference: {}", Chain(.chain))]
@@ -39,7 +39,7 @@ impl fmt::Display for Chain<'_> {
 
 /// Every key's value with its references expanded and its calls run, in the
 /// same order. `${NAME:-default}` takes `default` when `NAME` is unset or
-/// empty; `${rand(n)}` needs `seed`. Returns
+/// empty; `$(rand n)` needs `seed`. Returns
 /// every missing reference and every cycle, each once: a key that fails only
 /// because a key it references failed adds nothing.
 pub fn interpolate(
@@ -137,7 +137,7 @@ impl<'a> Resolver<'a> {
                     };
                     text.push_str(&expanded);
                 }
-                EnvValuePart::EnvCall(EnvCall::Rand { len }) => {
+                EnvValuePart::Call(EnvCall::Rand { len }) => {
                     let index = calls;
                     calls += 1;
                     let Some(seed) = self.seed else {

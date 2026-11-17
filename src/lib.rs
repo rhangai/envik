@@ -50,7 +50,7 @@ fn one_per_line<T: fmt::Display>(errors: &[T]) -> String {
 
 /// Merges `inputs` (later ones winning) and `overrides` (always winning) into
 /// the text of a `.env`. The first input is the layout template; with no
-/// inputs, the output is just the overrides. `seed` is what `${rand(n)}`
+/// inputs, the output is just the overrides. `seed` is what `$(rand n)`
 /// derives from; without it, any `rand` call is an error.
 pub fn generate(
     inputs: &[Source<'_>],

@@ -12,14 +12,17 @@
 //! value     = '"' double '"' after_quote
 //!           | "'" single "'" after_quote
 //!           | unquoted
-//! double    = { "${" reference "}" | "\" escape | char }
+//! double    = { "$" dollar | "\" escape | char }
 //! single    = { char }                    ; everything literal
-//! unquoted  = { "${" reference "}" | char }
+//! unquoted  = { "$" dollar | char }
 //!                                         ; up to a "#" after a blank, or the
 //!                                         ; end; trailing blanks dropped. A
 //!                                         ; "#" inside "${...}" is text
 //! after_quote = [ blank { blank } [ "#" comment ] ]
-//! reference = key [ ":-" default ] | "rand(" digits ")"
+//! dollar    = "{" reference | "(" call | ""  ; a lone "$" is text
+//! reference = key "}" | key ":-" default "}"
+//! default   = { char }                    ; no "${" or "$(" inside
+//! call      = "rand" blanks digits blanks ")"   ; words, like a shell
 //! escape    = "n" | '"' | "\" | "$"
 //! ```
 //!
@@ -76,14 +79,14 @@ pub enum ValueError {
     UnclosedRef,
     #[error("invalid reference `${{{0}}}`")]
     InvalidRef(String),
-    #[error("a default cannot contain another `${{...}}`")]
+    #[error("a default cannot contain `${{...}}` or `$(...)`")]
     NestedRef,
+    #[error("unclosed `$(`")]
+    UnclosedCall,
     #[error("unknown function `{0}` (only `rand` exists)")]
     UnknownFunction(String),
-    #[error("invalid call `${{{0}}}` (expected `rand(n)` with n from 1 to {MAX_RAND_LEN})")]
+    #[error("invalid call `$({0})` (expected `$(rand n)` with n from 1 to {MAX_RAND_LEN})")]
     InvalidCall(String),
-    #[error("a function call cannot have a default: `${{{0}}}`")]
-    DefaultOnCall(String),
 }
 
 /// Parses `src`; `origin` only labels errors. On failure, returns every
@@ -160,6 +163,19 @@ impl<'a> Cursor<'a> {
     /// Consumes the next character if it is `c`.
     fn eat(&mut self, c: char) -> bool {
         self.chars.next_if(|&(_, next)| next == c).is_some()
+    }
+
+    /// Consumes `text` if the line continues with it, for the one
+    /// two-character token, `:-`.
+    fn eat_str(&mut self, text: &str) -> bool {
+        let start = self.pos();
+        if !self.line[start..].starts_with(text) {
+            return false;
+        }
+        for _ in text.chars() {
+            self.bump();
+        }
+        true
     }
 
     /// Skips blanks; whether there were any.
@@ -273,11 +289,7 @@ impl<'a> Cursor<'a> {
                     value.push_char(self.escape()?);
                 }
                 Some('$') => {
-                    if self.eat('{') {
-                        self.reference(&mut value, true)?;
-                    } else {
-                        value.push_char('$');
-                    }
+                    self.dollar(&mut value, true)?;
                 }
                 Some(c) => {
                     value.push_char(c);
@@ -348,11 +360,7 @@ impl<'a> Cursor<'a> {
             }
             match c {
                 '$' => {
-                    if self.eat('{') {
-                        self.reference(&mut value, false)?;
-                    } else {
-                        value.push_char('$');
-                    }
+                    self.dollar(&mut value, false)?;
                 }
                 _ => {
                     value.push_char(c);
@@ -376,73 +384,128 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    /// `${...}`, appended to `value`. The `${` is already read; inside
-    /// `"..."` (`quoted`), the default takes escapes.
-    fn reference(&mut self, value: &mut EnvValue, quoted: bool) -> Result<(), ValueError> {
-        let body = self.reference_body(quoted)?;
-        let (name, default) = match body.split_once(":-") {
-            Some((name, default)) => (name, Some(default.to_owned())),
-            None => (body.as_str(), None),
-        };
-        if name.contains('(') {
-            if default.is_some() {
-                return Err(ValueError::DefaultOnCall(body.clone()));
-            }
-            value.push_call(parse_call(name)?);
+    /// What follows a `$`, appended to `value`: `${...}`, `$(...)`, or
+    /// nothing, and then the `$` is just text. Inside `"..."` (`quoted`), a
+    /// `"` before the closing `}` or `)` means it was never closed.
+    fn dollar(&mut self, value: &mut EnvValue, quoted: bool) -> Result<(), ValueError> {
+        if self.eat('{') {
+            let (key, default) = self.reference(quoted)?;
+            value.push_ref(key, default);
             return Ok(());
         }
-        let Some(key) = EnvKey::new(name) else {
-            return Err(ValueError::InvalidRef(body.clone()));
-        };
-        value.push_ref(key, default);
+        if self.eat('(') {
+            value.push_call(self.call(quoted)?);
+            return Ok(());
+        }
+        value.push_char('$');
         Ok(())
     }
 
-    /// The text up to the closing `}`, which is consumed. Read whole first,
-    /// so an error can quote all of it.
-    fn reference_body(&mut self, quoted: bool) -> Result<String, ValueError> {
-        let mut body = String::new();
+    /// `NAME}` or `NAME:-default}`. The `${` is already read.
+    fn reference(&mut self, quoted: bool) -> Result<(EnvKey, Option<String>), ValueError> {
+        let start = self.pos();
+        let Some(key) = self.key() else {
+            return Err(self.invalid_reference(start, quoted));
+        };
+        if self.eat('}') {
+            return Ok((key, None));
+        }
+        if self.eat_str(":-") {
+            let default = self.default(quoted)?;
+            return Ok((key, Some(default)));
+        }
+        Err(self.invalid_reference(start, quoted))
+    }
+
+    /// A reference's default, up to the closing `}`, which is consumed. Plain
+    /// text: inside `"..."` it takes escapes.
+    fn default(&mut self, quoted: bool) -> Result<String, ValueError> {
+        let mut text = String::new();
         loop {
             match self.bump() {
                 None => {
                     return Err(ValueError::UnclosedRef);
                 }
                 Some('}') => {
-                    return Ok(body);
+                    return Ok(text);
                 }
                 Some('"') if quoted => {
                     return Err(ValueError::UnclosedRef);
                 }
                 Some('\\') if quoted => {
-                    body.push(self.escape()?);
+                    text.push(self.escape()?);
                 }
                 Some('$') => {
-                    if self.eat('{') {
+                    if matches!(self.peek(), Some('{' | '(')) {
                         return Err(ValueError::NestedRef);
                     }
-                    body.push('$');
+                    text.push('$');
                 }
                 Some(c) => {
-                    body.push(c);
+                    text.push(c);
                 }
             }
         }
     }
-}
 
-/// `function(args)`, the text of a `${...}` that holds a call.
-fn parse_call(text: &str) -> Result<EnvCall, ValueError> {
-    let invalid = || ValueError::InvalidCall(text.to_owned());
-    let (function, rest) = text.split_once('(').ok_or_else(invalid)?;
-    let args = rest.strip_suffix(')').ok_or_else(invalid)?;
-    if function != "rand" {
-        return Err(ValueError::UnknownFunction(function.to_owned()));
+    /// Why the reference that started at `start` is not `NAME}` or
+    /// `NAME:-default}`, quoting it up to its `}`.
+    fn invalid_reference(&self, start: usize, quoted: bool) -> ValueError {
+        let text = &self.line[start..];
+        for (offset, c) in text.char_indices() {
+            match c {
+                '}' => {
+                    return ValueError::InvalidRef(text[..offset].to_owned());
+                }
+                '"' if quoted => {
+                    return ValueError::UnclosedRef;
+                }
+                _ => {}
+            }
+        }
+        ValueError::UnclosedRef
     }
-    let len: usize = args.trim().parse().map_err(|_| invalid())?;
-    if !(1..=MAX_RAND_LEN).contains(&len) {
-        return Err(invalid());
+
+    /// `name args)`, read like a shell command: words up to the `)`, which
+    /// is consumed. The `$(` is already read.
+    fn call(&mut self, quoted: bool) -> Result<EnvCall, ValueError> {
+        let start = self.pos();
+        loop {
+            match self.bump() {
+                None => {
+                    return Err(ValueError::UnclosedCall);
+                }
+                Some(')') => {
+                    break;
+                }
+                Some('"') if quoted => {
+                    return Err(ValueError::UnclosedCall);
+                }
+                Some(_) => {}
+            }
+        }
+        // The closing `)` is one byte.
+        let end = self.pos() - 1;
+        let text = &self.line[start..end];
+        let invalid = || ValueError::InvalidCall(text.to_owned());
+        let mut words = text.split_whitespace();
+        let Some(function) = words.next() else {
+            return Err(invalid());
+        };
+        if function != "rand" {
+            return Err(ValueError::UnknownFunction(function.to_owned()));
+        }
+        let (Some(len), None) = (words.next(), words.next()) else {
+            return Err(invalid());
+        };
+        let Ok(len) = len.parse::<usize>() else {
+            return Err(invalid());
+        };
+        if !(1..=MAX_RAND_LEN).contains(&len) {
+            return Err(invalid());
+        }
+        Ok(EnvCall::Rand { len })
     }
-    Ok(EnvCall::Rand { len })
 }
 
 #[cfg(test)]
@@ -595,7 +658,11 @@ mod tests {
 
         let mut secret = EnvValue::default();
         secret.push_call(EnvCall::Rand { len: 32 });
-        assert_eq!(value("${rand(32)}"), secret);
+        assert_eq!(value("$(rand 32)"), secret);
+        assert_eq!(value("$( rand  32 )"), secret);
+
+        // A `$` followed by neither `{` nor `(` is text.
+        assert_eq!(value("a$b$"), lit("a$b$"));
     }
 
     #[test]
@@ -646,15 +713,29 @@ mod tests {
                 "unknown escape `\\t` (only \\n, \\\", \\\\ and \\$ are allowed)",
             ),
             ("${A", "unclosed `${`"),
-            ("${B:-${C}}", "a default cannot contain another `${...}`"),
-            ("${nope(1)}", "unknown function `nope` (only `rand` exists)"),
+            ("${A B}", "invalid reference `${A B}`"),
+            ("${rand(8)}", "invalid reference `${rand(8)}`"),
             (
-                "${rand(0)}",
-                "invalid call `${rand(0)}` (expected `rand(n)` with n from 1 to 1024)",
+                "${B:-${C}}",
+                "a default cannot contain `${...}` or `$(...)`",
             ),
             (
-                "${rand(8):-x}",
-                "a function call cannot have a default: `${rand(8):-x}`",
+                "${B:-$(rand 8)}",
+                "a default cannot contain `${...}` or `$(...)`",
+            ),
+            ("$(rand 8", "unclosed `$(`"),
+            ("$(nope 1)", "unknown function `nope` (only `rand` exists)"),
+            (
+                "$(rand 0)",
+                "invalid call `$(rand 0)` (expected `$(rand n)` with n from 1 to 1024)",
+            ),
+            (
+                "$(rand)",
+                "invalid call `$(rand)` (expected `$(rand n)` with n from 1 to 1024)",
+            ),
+            (
+                "$(rand 8 9)",
+                "invalid call `$(rand 8 9)` (expected `$(rand n)` with n from 1 to 1024)",
             ),
         ] {
             let error = read_value(text).unwrap_err();

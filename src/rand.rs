@@ -1,4 +1,4 @@
-//! `${rand(n)}`: random-looking text that is the same on every run with the
+//! `$(rand n)`: random-looking text that is the same on every run with the
 //! same seed, so regenerating a `.env` does not rotate its secrets.
 
 use crate::env::EnvKey;
@@ -10,7 +10,7 @@ const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 /// Changing it changes every generated value, for every user.
 const CONTEXT: &str = "envik rand v1";
 
-/// A seed for `${rand(n)}`. Never empty: [`Seed::new`] refuses that.
+/// A seed for `$(rand n)`. Never empty: [`Seed::new`] refuses that.
 #[derive(Clone)]
 pub struct Seed {
     /// A blake3 key derived from the seed text, not the text itself.
@@ -90,20 +90,17 @@ mod tests {
 
     #[test]
     fn stable_per_key() {
-        let alone = value_of("S=${rand(32)}\n", "abc", "S");
+        let alone = value_of("S=$(rand 32)\n", "abc", "S");
 
         // Pinned: a change here rotates every user's generated secrets.
         assert_eq!(alone, "s86Qp_FQH_rjGu5Gqkeb3yEdkHoRMa_3");
-        assert_eq!(value_of("S=${rand(32)}\n", "abc", "S"), alone);
-        assert_ne!(value_of("S=${rand(32)}\n", "abd", "S"), alone);
+        assert_eq!(value_of("S=$(rand 32)\n", "abc", "S"), alone);
+        assert_ne!(value_of("S=$(rand 32)\n", "abd", "S"), alone);
         // Other `rand` lines before or after `S` do not move it.
         assert_eq!(
-            value_of("A=${rand(32)}\nB=${rand(8)}\nS=${rand(32)}\n", "abc", "S"),
+            value_of("A=$(rand 32)\nB=$(rand 8)\nS=$(rand 32)\n", "abc", "S"),
             alone
         );
-        assert_eq!(
-            value_of("S=${rand(32)}\nZ=${rand(32)}\n", "abc", "S"),
-            alone
-        );
+        assert_eq!(value_of("S=$(rand 32)\nZ=$(rand 32)\n", "abc", "S"), alone);
     }
 }

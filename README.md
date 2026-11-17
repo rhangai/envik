@@ -85,7 +85,8 @@ gives `URL=https://site:123`, `BASE=site:123` and `LOG=info`.
   whatever order the lines are in. With `-e PORT=445` above, both `BASE` and
   `URL` change.
 - `${NAME:-default}` takes `default` when `NAME` is unset or empty. The
-  default is plain text and cannot hold another `${...}`.
+  default is plain text and cannot hold another `${...}` or a `$(...)`. A
+  `#` inside `${...}` is part of it, not a comment.
 - A reference to something unset, with no default, is an error; so is a loop
   (`A=${B}`, `B=${A}`). Every one is reported in the same run, and nothing is
   written.
@@ -95,10 +96,10 @@ gives `URL=https://site:123`, `BASE=site:123` and `LOG=info`.
 ## Generated secrets
 
 ```sh
-APP_SECRET=${rand(32)}
+APP_SECRET=$(rand 32)
 ```
 
-`${rand(n)}` writes `n` characters (1 to 1024) from `A-Z a-z 0-9 - _`. They
+`$(rand n)` writes `n` characters (1 to 1024) from `A-Z a-z 0-9 - _`. They
 look random, but they come from a seed, so running `generate` again gives the
 same secrets and nothing gets rotated by accident. The value depends only on
 the seed, the variable's name and which `rand` it is inside that value:
@@ -119,9 +120,11 @@ echo .env-seed >> .gitignore
 envik generate -i .env.example -o .env --seed-file .env-seed --seed-file-create
 ```
 
-A `rand` with no seed, an empty seed, `rand(0)`, an unknown function or a
-default on a call (`${rand(8):-x}`) is an error. Like a reference, `rand` does
-nothing inside `'...'` or in a `-e` value.
+It's written like a shell command: `$(rand 32)`, spaces allowed around the
+words. A `rand` with no seed, an empty seed, `$(rand 0)`, `$(rand)` or an
+unknown function is an error. Like a reference, `$(...)` does nothing inside
+`'...'` or in a `-e` value; a `$` followed by neither `{` nor `(` is just
+text.
 
 Anyone with the seed can regenerate your secrets: keep it as secret as they
 are.

@@ -53,18 +53,18 @@ pub enum EnvValuePart {
         name: EnvKey,
         default: Option<String>,
     },
-    /// `${function(args)}`, already checked.
-    EnvCall(EnvCall),
+    /// `$(name args)`, already checked.
+    Call(EnvCall),
 }
 
-/// A function call inside `${...}`.
+/// A function call, `$(name args)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvCall {
-    /// `rand(len)`: `len` characters, 1 to [`MAX_RAND_LEN`].
+    /// `$(rand len)`: `len` characters, 1 to [`MAX_RAND_LEN`].
     Rand { len: usize },
 }
 
-/// Longest `rand(n)`: a guard against a typo asking for megabytes.
+/// Longest `$(rand n)`: a guard against a typo asking for megabytes.
 pub const MAX_RAND_LEN: usize = 1024;
 
 /// A sequence of [`EnvValuePart`]s, normalized so that equal content compares equal:
@@ -118,7 +118,7 @@ impl EnvValue {
 
     /// Appends `${function(args)}`.
     pub fn push_call(&mut self, call: EnvCall) {
-        self.0.push(EnvValuePart::EnvCall(call));
+        self.0.push(EnvValuePart::Call(call));
     }
 }
 

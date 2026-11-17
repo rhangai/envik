@@ -436,7 +436,7 @@ fn rand_values_are_distinct() {
     let template = dir.join("a.env");
     fs::write(
         &template,
-        "S=${rand(32)}\nA=${rand(16)}\nB=${rand(16)}\nC=${rand(8)}-${rand(8)}\nD=${S}\n",
+        "S=$(rand 32)\nA=$(rand 16)\nB=$(rand 16)\nC=$(rand 8)-$(rand 8)\nD=${S}\n",
     )
     .unwrap();
 
@@ -478,16 +478,16 @@ fn rand_errors_and_literals() {
     fs::write(&empty_seed, "").unwrap();
     fs::write(&seed, "abc\n").unwrap();
 
-    let ok = "S=${rand(8)}\n";
+    let ok = "S=$(rand 8)\n";
     // (template, seed arguments, environment set for the child)
     type Case<'a> = (&'a str, &'a [&'a str], &'a [(&'a str, &'a str)]);
     let cases: [Case<'_>; 13] = [
         (ok, &[], &[]),
-        ("S=${rand(0)}\n", &["--seed-value", "abc"], &[]),
-        ("S=${rand(1025)}\n", &["--seed-value", "abc"], &[]),
-        ("S=${rand(x)}\n", &["--seed-value", "abc"], &[]),
-        ("S=${nope(1)}\n", &["--seed-value", "abc"], &[]),
-        ("S=${rand(32):-x}\n", &["--seed-value", "abc"], &[]),
+        ("S=$(rand 0)\n", &["--seed-value", "abc"], &[]),
+        ("S=$(rand 1025)\n", &["--seed-value", "abc"], &[]),
+        ("S=$(rand x)\n", &["--seed-value", "abc"], &[]),
+        ("S=$(nope 1)\n", &["--seed-value", "abc"], &[]),
+        ("S=$(rand)\n", &["--seed-value", "abc"], &[]),
         (ok, &["--seed-value", ""], &[]),
         (ok, &["--seed-file", path(&empty_seed)], &[]),
         (ok, &["--seed-env", "ENVIK_SEED"], &[("ENVIK_SEED", "")]),
@@ -533,8 +533,8 @@ fn rand_errors_and_literals() {
     }
 
     // No seed is needed: neither of these is a call.
-    fs::write(&template, "L='${rand(8)}'\n").unwrap();
-    let run = envik(&["generate", "-i", path(&template), "-e", "X=${rand(8)}"]);
+    fs::write(&template, "L='$(rand 8)'\n").unwrap();
+    let run = envik(&["generate", "-i", path(&template), "-e", "X=$(rand 8)"]);
     assert!(
         run.status.success(),
         "stderr: {}",
@@ -542,7 +542,7 @@ fn rand_errors_and_literals() {
     );
     assert_eq!(
         String::from_utf8(run.stdout).unwrap(),
-        "L='${rand(8)}'\nX='${rand(8)}'\n"
+        "L='$(rand 8)'\nX='$(rand 8)'\n"
     );
     fs::remove_dir_all(&dir).unwrap();
 }
@@ -565,12 +565,12 @@ fn seed_file_create_and_reuse() {
     ];
 
     // A failing generation creates no seed.
-    fs::write(&template, "S=${rand(16)}\nX=${MISSING}\n").unwrap();
+    fs::write(&template, "S=$(rand 16)\nX=${MISSING}\n").unwrap();
     let run = envik(&args);
     assert!(!run.status.success(), "succeeded");
     assert_eq!(entries(&dir), ["a.env"]);
 
-    fs::write(&template, "S=${rand(16)}\n").unwrap();
+    fs::write(&template, "S=$(rand 16)\n").unwrap();
     let first = envik(&args);
     assert!(
         first.status.success(),
@@ -616,7 +616,7 @@ fn seed_from_env() {
     let dir = scratch("seed_from_env");
     let template = dir.join("a.env");
     let missing = dir.join("missing.env");
-    fs::write(&template, "S=${rand(16)}\n").unwrap();
+    fs::write(&template, "S=$(rand 16)\n").unwrap();
 
     let from_env = envik_env(
         &[
