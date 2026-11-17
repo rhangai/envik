@@ -53,6 +53,11 @@ pub fn render(template: &EnvFile, resolved: &EnvMap<String>) -> String {
         }
         push_entry(&mut out, key, text);
     }
+    // A template whose last line has no newline still gives a text file
+    // that ends with one.
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
     out
 }
 
@@ -118,9 +123,11 @@ fn write_literal(text: &str, out: &mut String) {
 }
 
 /// Characters that read back as themselves outside quotes, whatever their
-/// neighbours: no blank, `#`, quote, `\` or `$`.
+/// neighbours: no blank, `#`, quote, `\` or `$`, and none a shell sourcing
+/// the file would act on, such as `&` or `~`. `?` is safe: a shell does not
+/// expand it in an assignment.
 fn is_safe_bare(c: char) -> bool {
-    c.is_ascii_alphanumeric() || "_-./:@%+,=".contains(c)
+    c.is_ascii_alphanumeric() || "_-./:@%+,=?".contains(c)
 }
 
 fn push_escaped(out: &mut String, text: &str) {
@@ -226,6 +233,9 @@ mod tests {
             "\n",
             "tab\there",
             "ação",
+            "http://a/b?client_id=rh",
+            "?a=1&b=2",
+            "~/x",
         ];
         for text in texts {
             let written = render_text("", &[], &[("A", text)]);
@@ -241,5 +251,26 @@ mod tests {
         generator.env_override(EnvKey::new("OPT").unwrap(), "on".into());
 
         assert_eq!(generator.generate().unwrap(), "A=1\nOPT=on\nB=2\n");
+    }
+
+    #[test]
+    fn question_mark_stays_bare() {
+        assert_eq!(
+            render_text("", &[], &[("URL", "http://a/b?client_id=rh")]),
+            "URL=http://a/b?client_id=rh\n",
+        );
+        // `&` would end the command in a shell, so it is still quoted.
+        assert_eq!(
+            render_text("", &[], &[("URL", "http://a/b?a=1&b=2")]),
+            "URL='http://a/b?a=1&b=2'\n",
+        );
+    }
+
+    #[test]
+    fn output_ends_with_newline() {
+        assert_eq!(render_text("A=1\nB=2", &[], &[]), "A=1\nB=2\n");
+        assert_eq!(render_text("A=1\nB=2", &[], &[("B", "3")]), "A=1\nB=3\n");
+        assert_eq!(render_text("A=1\n", &[], &[]), "A=1\n");
+        assert_eq!(render_text("", &[], &[]), "");
     }
 }
