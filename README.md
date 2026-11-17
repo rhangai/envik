@@ -2,6 +2,32 @@
 
 Builds `.env` files from templates, overrides and command-line values.
 
+## Install
+
+With npm:
+
+```sh
+npm i -g envik
+# or, without installing
+npx envik generate -i .env.example -o .env
+```
+
+With the installer script (macOS and Linux):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/rhangai/envik/releases/latest/download/envik-installer.sh | sh
+```
+
+On Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/rhangai/envik/releases/latest/download/envik-installer.ps1 | iex"
+```
+
+Or download a binary from the [releases page](https://github.com/rhangai/envik/releases):
+Linux (x86_64, ARM64, and a static musl build), macOS (Intel and Apple
+Silicon) and Windows (x86_64).
+
 ## `envik generate`
 
 ```sh
@@ -141,3 +167,17 @@ written:
   `"it's"`, `"a\nb"`.
 
 Reading the output back gives the same values.
+
+## Releasing
+
+For maintainers: Actions → **Prepare release** → Run workflow, on `main`.
+Give a version (`0.2.0`) or leave it empty to work it out from the commits
+since the last tag (`feat` bumps the minor, `fix` the patch). It bumps
+`Cargo.toml`, writes `CHANGELOG.md`, commits, tags and pushes; the tag starts
+the **Release** workflow, which builds every target, creates the GitHub
+Release and publishes to npm. Locally, `cargo release 0.2.0` shows what it
+would do, without changing anything.
+
+It needs two repository secrets: `RELEASE_DEPLOY_KEY`, the private half of a
+deploy key with write access (a tag pushed with the default token would not
+start the Release workflow), and `NPM_TOKEN`, an npm token that can publish.
