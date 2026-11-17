@@ -2,6 +2,7 @@
 //! [`envik::generate`], which never touches the disk.
 
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -42,6 +43,13 @@ struct GenerateArgs {
     #[arg(short, long = "output", value_name = "FILE")]
     output: Option<PathBuf>,
 
+    /// Every environment variable PREFIX + KEY replaces KEY, when the inputs
+    /// already have KEY (even as `# KEY=`). Wins over the files and -e, and
+    /// is taken literally. E.g. CI_OVERRIDE_ turns CI_OVERRIDE_DB_PASS into
+    /// DB_PASS.
+    #[arg(long, value_name = "PREFIX", value_parser = parse_prefix)]
+    env_override_prefix: Option<String>,
+
     /// Seed for $(rand n), given here. It stays in your shell history: use
     /// it locally.
     #[arg(long, value_name = "TEXT", group = "seed", allow_hyphen_values = true)]
@@ -59,6 +67,15 @@ struct GenerateArgs {
     /// Seed for $(rand n), read from the environment variable VAR.
     #[arg(long, value_name = "VAR", group = "seed", value_parser = parse_env_name)]
     seed_env: Option<EnvKey>,
+}
+
+/// `--env-override-prefix` value parser: an empty prefix would take the
+/// whole environment.
+fn parse_prefix(arg: &str) -> Result<String, String> {
+    if arg.is_empty() {
+        return Err("the prefix cannot be empty".to_owned());
+    }
+    Ok(arg.to_owned())
 }
 
 /// `--seed-env` value parser, and the key of every `-e`.
@@ -154,6 +171,9 @@ fn generate(args: &GenerateArgs) -> Result<(), CliError> {
     for (key, value) in inputs.env_flags {
         generator.env_flag(key, value);
     }
+    for (key, value) in inputs.env_overrides {
+        generator.env_override(key, value);
+    }
     if let Some(seed) = inputs.seed {
         generator.seed(seed);
     }
@@ -185,6 +205,9 @@ struct Inputs {
     contents: Vec<String>,
     /// One per `-e`, in the same order, `-e KEY` already looked up.
     env_flags: Vec<(EnvKey, String)>,
+    /// From `--env-override-prefix`, sorted by key; values not yet checked
+    /// for UTF-8, since only the ones used must be.
+    env_overrides: Vec<(EnvKey, OsString)>,
     /// From `--seed-value`, `--seed-env` or `--seed-file`, when one was given.
     seed: Option<Seed>,
     /// Written only after the generation succeeds.
@@ -212,6 +235,10 @@ fn read_inputs(args: &GenerateArgs) -> Result<Inputs, Vec<InputError>> {
             Err(error) => errors.push(error),
         }
     }
+    let env_overrides = match &args.env_override_prefix {
+        Some(prefix) => read_env_overrides(prefix),
+        None => Vec::new(),
+    };
     let mut seed = None;
     let mut new_seed_file = None;
     match read_seed(args) {
@@ -230,6 +257,7 @@ fn read_inputs(args: &GenerateArgs) -> Result<Inputs, Vec<InputError>> {
     Ok(Inputs {
         contents,
         env_flags,
+        env_overrides,
         seed,
         new_seed_file,
     })
@@ -241,6 +269,29 @@ fn read_override(item: &Override) -> Result<(EnvKey, String), InputError> {
         Override::Literal(key, value) => Ok((key.clone(), value.clone())),
         Override::FromEnv(key) => Ok((key.clone(), read_env(key)?)),
     }
+}
+
+/// Every environment variable named `prefix` + a valid key, as that key,
+/// sorted so the output and errors are the same on every run. Any other
+/// variable, including a prefixed one whose rest is not a key, is skipped:
+/// it could never replace anything.
+fn read_env_overrides(prefix: &str) -> Vec<(EnvKey, OsString)> {
+    let mut overrides = Vec::new();
+    for (name, value) in env::vars_os() {
+        // Bytes, so a non-UTF-8 name elsewhere in the environment is no error.
+        let Some(rest) = name.as_encoded_bytes().strip_prefix(prefix.as_bytes()) else {
+            continue;
+        };
+        let Ok(rest) = std::str::from_utf8(rest) else {
+            continue;
+        };
+        let Some(key) = EnvKey::new(rest) else {
+            continue;
+        };
+        overrides.push((key, value));
+    }
+    overrides.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+    overrides
 }
 
 /// `key` from the process environment.

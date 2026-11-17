@@ -668,3 +668,136 @@ fn seed_from_env() {
     );
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn env_override_prefix() {
+    let dir = scratch("env_override_prefix");
+    let template = dir.join("a.env");
+    fs::write(&template, "APP_PASSWORD=dev  # x\n").unwrap();
+    let set = [
+        ("CI_OVERRIDE_APP_PASSWORD", "s3cr3t"),
+        ("CI_OVERRIDE_FOO", "bar"),
+    ];
+
+    let with = envik_env(
+        &[
+            "generate",
+            "-i",
+            path(&template),
+            "--env-override-prefix",
+            "CI_OVERRIDE_",
+        ],
+        &set,
+        &[],
+    );
+    let without = envik_env(&["generate", "-i", path(&template)], &set, &[]);
+
+    assert!(
+        with.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&with.stderr)
+    );
+    assert!(
+        without.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&without.stderr)
+    );
+    // `FOO` is in no input: no line for it, no `# ----` section.
+    assert_eq!(
+        String::from_utf8(with.stdout).unwrap(),
+        "APP_PASSWORD=s3cr3t  # x\n"
+    );
+    assert_eq!(
+        String::from_utf8(without.stdout).unwrap(),
+        "APP_PASSWORD=dev  # x\n"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn env_override_prefix_wins_and_turns_on() {
+    let dir = scratch("env_override_prefix_wins_and_turns_on");
+    let template = dir.join("a.env");
+    fs::write(&template, "# DEBUG=\nAPP_PASSWORD=dev\n").unwrap();
+
+    let run = envik_env(
+        &[
+            "generate",
+            "-i",
+            path(&template),
+            "-e",
+            "APP_PASSWORD=x",
+            "--env-override-prefix",
+            "CI_OVERRIDE_",
+        ],
+        &[
+            ("CI_OVERRIDE_APP_PASSWORD", "y"),
+            ("CI_OVERRIDE_DEBUG", "1"),
+        ],
+        &[],
+    );
+
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        "DEBUG=1\nAPP_PASSWORD=y\n"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn env_override_prefix_invalid() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = scratch("env_override_prefix_invalid");
+    let template = dir.join("a.env");
+    let out = dir.join(".env");
+    let original = "KEEP=me\n# untouched\n";
+    fs::write(&template, "A=1\n").unwrap();
+    let not_utf8 = || OsString::from_vec(vec![b'x', 0xff, b'y']);
+    let run_with = |name: &str| {
+        Command::new(env!("CARGO_BIN_EXE_envik"))
+            .args([
+                "generate",
+                "-i",
+                path(&template),
+                "-o",
+                path(&out),
+                "--env-override-prefix",
+                "CI_OVERRIDE_",
+            ])
+            .env("CI_OVERRIDE_", "empty")
+            .env("CI_OVERRIDE_A-B", "hyphen")
+            .env(name, not_utf8())
+            .output()
+            .unwrap()
+    };
+
+    // Invalid names and a non-UTF-8 value for a key no input has: all skipped.
+    fs::write(&out, original).unwrap();
+    let unused = run_with("CI_OVERRIDE_NOPE");
+    assert!(
+        unused.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&unused.stderr)
+    );
+    assert_eq!(fs::read_to_string(&out).unwrap(), "A=1\n");
+
+    // The same value for `A`, which the template has: an error, nothing written.
+    fs::write(&out, original).unwrap();
+    let used = run_with("CI_OVERRIDE_A");
+    assert!(!used.status.success(), "succeeded");
+    assert_eq!(
+        String::from_utf8(used.stderr).unwrap(),
+        "envik: `A`: its value from the environment is not valid UTF-8\n",
+    );
+    assert_eq!(fs::read_to_string(&out).unwrap(), original);
+    assert_eq!(entries(&dir), [".env", "a.env"], "left files behind");
+    fs::remove_dir_all(&dir).unwrap();
+}
