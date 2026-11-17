@@ -43,18 +43,40 @@ pub fn render(template: &EnvFile, merged: &Merged<String>) -> String {
         }
         push_with_final_value(&mut out, entry, text);
     }
+    let mut extras_started = false;
     for (key, text) in merged.iter() {
         if placed.contains(key) {
             continue;
         }
-        // A template whose last line has no newline: start on a fresh line.
-        if !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
+        if !extras_started {
+            push_extras_header(&mut out);
+            extras_started = true;
         }
         push_entry(&mut out, key, text);
     }
     out
 }
+
+/// Starts the keys the template does not have: a blank line, then
+/// [`EXTRAS_COMMENT`], so they do not read as part of the template's last
+/// block. Nothing when the template wrote nothing.
+fn push_extras_header(out: &mut String) {
+    if out.is_empty() {
+        return;
+    }
+    // A template whose last line has no newline.
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    // One blank line, even if the template already ends with one.
+    if !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+    out.push_str(EXTRAS_COMMENT);
+}
+
+/// The line above the keys the template does not have.
+const EXTRAS_COMMENT: &str = "# ----\n";
 
 /// `entry`'s line with its value replaced by `final_text`. It stays untouched
 /// only when it holds no reference and already says that value: a `${...}`
@@ -155,7 +177,7 @@ mod tests {
                 &[],
                 &[("PORT", "1")],
             ),
-            "# PORT padrão é 3000\n#  PORT=1\nHOST=x\nPORT=1\n",
+            "# PORT padrão é 3000\n#  PORT=1\nHOST=x\n\n# ----\nPORT=1\n",
         );
     }
 

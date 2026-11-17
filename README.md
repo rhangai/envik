@@ -48,7 +48,15 @@ command line.
 order come out unchanged, and each `KEY=value` gets its final value. Only the
 value is replaced; spacing and an inline comment (`PORT=3000  # api`) stay.
 Keys that the template does not have are appended at the end, in the order
-they first appeared. Comments from the other files are dropped.
+they first appeared, after a blank line and a `# ----`
+line. Comments from the other files are dropped.
+
+```sh
+DB_URL=postgres://localhost/app
+
+# ----
+EXTRA=2
+```
 
 **Optional variables.** A template line that is exactly `#KEY=...` or
 `# KEY=...` is an optional variable:
