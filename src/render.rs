@@ -3,8 +3,7 @@
 
 use std::collections::HashSet;
 
-use crate::env::{EnvEntry, EnvEntryState, EnvFile, EnvFileLine, EnvKey};
-use crate::merge::Merged;
+use crate::env::{EnvEntry, EnvEntryState, EnvFile, EnvFileLine, EnvKey, EnvMap};
 
 /// A line whose value did not change comes back byte for byte; a changed
 /// one has only its value replaced, keeping spacing and inline comment.
@@ -12,7 +11,7 @@ use crate::merge::Merged;
 /// A commented `# KEY=` line becomes active in place when some source sets
 /// `KEY` and the template has no active `KEY` line; only the first such line
 /// per key does. When nothing sets `KEY`, the line is dropped.
-pub fn render(template: &EnvFile, merged: &Merged<String>) -> String {
+pub fn render(template: &EnvFile, resolved: &EnvMap<String>) -> String {
     // Keys that already have their line: every active one, then each
     // commented one as it is turned on.
     let mut placed: HashSet<&EnvKey> = template.entries().map(|(key, _)| key).collect();
@@ -26,7 +25,7 @@ pub fn render(template: &EnvFile, merged: &Merged<String>) -> String {
             EnvFileLine::Entry(entry) => entry,
         };
         // Merging reads the template first, so an active line is always set.
-        let Some(text) = merged.get(&entry.key) else {
+        let Some(text) = resolved.get(&entry.key) else {
             if entry.state == EnvEntryState::Active {
                 out.push_str(&entry.raw);
             }
@@ -44,7 +43,7 @@ pub fn render(template: &EnvFile, merged: &Merged<String>) -> String {
         push_with_final_value(&mut out, entry, text);
     }
     let mut extras_started = false;
-    for (key, text) in merged.iter() {
+    for (key, text) in resolved.iter() {
         if placed.contains(key) {
             continue;
         }
@@ -140,25 +139,32 @@ fn push_escaped(out: &mut String, text: &str) {
 mod tests {
     use std::path::Path;
 
-    use super::*;
     use crate::env::EnvValue;
-    use crate::merge::merge;
     use crate::parse::parse_file;
+    use crate::{EnvKey, Generator, Source};
+
+    fn generator(sources: &[&str]) -> Generator {
+        let sources: Vec<Source<'_>> = sources
+            .iter()
+            .map(|contents| Source {
+                origin: Path::new("test.env"),
+                contents,
+            })
+            .collect();
+        Generator::new(&sources).unwrap()
+    }
 
     /// Renders `template`, with `template` and then `others` as the input
-    /// files and `overrides` as the `-e` values.
-    fn render_text(template: &str, others: &[&str], overrides: &[(&str, &str)]) -> String {
-        let read = |src: &str| parse_file(src, Path::new("test.env")).unwrap();
-        let files: Vec<EnvFile> = std::iter::once(template)
+    /// files and `env_flags` as the `-e` values.
+    fn render_text(template: &str, others: &[&str], env_flags: &[(&str, &str)]) -> String {
+        let sources: Vec<&str> = std::iter::once(template)
             .chain(others.iter().copied())
-            .map(read)
             .collect();
-        let overrides: Vec<(EnvKey, String)> = overrides
-            .iter()
-            .map(|(key, value)| (EnvKey::new(key).unwrap(), (*value).to_owned()))
-            .collect();
-        let resolved = crate::interpolate::interpolate(&merge(&files, &overrides), None).unwrap();
-        render(&read(template), &resolved)
+        let mut generator = generator(&sources);
+        for (key, value) in env_flags {
+            generator.env_flag(EnvKey::new(key).unwrap(), (*value).to_owned());
+        }
+        generator.generate().unwrap()
     }
 
     #[test]
@@ -227,5 +233,13 @@ mod tests {
             let values: Vec<_> = file.entries().map(|(_, value)| value).collect();
             assert_eq!(values, [&EnvValue::literal(text.to_owned())], "{written:?}");
         }
+    }
+
+    #[test]
+    fn env_override_turns_on_optional_line() {
+        let mut generator = generator(&["A=1\n# OPT=default\nB=2\n"]);
+        generator.env_override(EnvKey::new("OPT").unwrap(), "on".into());
+
+        assert_eq!(generator.generate().unwrap(), "A=1\nOPT=on\nB=2\n");
     }
 }

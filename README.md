@@ -39,6 +39,7 @@ envik generate -i .env.example -i .env.override -e PORT=445 -o .env
 | `-i, --input <FILE>` | Input file. Repeatable, at least one. |
 | `-e, --env <KEY[=VALUE]>` | A value, taken literally. With just `KEY`, the value comes from your environment (`-e PORT`). Repeatable. |
 | `-o, --output <FILE>` | Output file, created or overwritten. Without it, the result goes to stdout. |
+| `--env-override-prefix <PREFIX>` | Every environment variable `PREFIX` + `KEY` replaces `KEY`, if the inputs have it. See [CI secrets](#ci-secrets). |
 
 **Precedence.** The `-i` files apply in the order given, later ones winning.
 Every `-e` applies after all files and always wins, wherever it sits on the
@@ -79,6 +80,24 @@ Anything looser is plain text and never touched: `# DEBUG` (no `=`),
 that is not in your environment prints an error and exits non-zero. An empty
 variable (`PORT=`) is a value, not an error. Nothing is written: an existing output file stays
 as it was.
+
+## CI secrets
+
+```sh
+# In CI, with CI_OVERRIDE_DB_PASS=s3cr3t set as a secret:
+envik generate -i .env.example -o .env --env-override-prefix CI_OVERRIDE_
+```
+
+`DB_PASS=dev` in `.env.example` comes out as `DB_PASS=s3cr3t`, with its
+inline comment kept, and references to it (`DB_URL=...${DB_PASS}...`) use the
+new value. Adding a secret is just adding a variable: the command stays the
+same.
+
+- Only keys the inputs already have are replaced, including an optional
+  `# KEY=` line, which is turned on. A prefixed variable with no matching key
+  is ignored, so nothing unexpected ends up in the `.env`.
+- It wins over the files and over `-e`, and is taken literally.
+- A value that isn't valid UTF-8 is an error only for a key that's used.
 
 ## Syntax
 

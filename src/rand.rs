@@ -79,13 +79,19 @@ mod tests {
 
     use super::*;
 
-    /// Interpolates `src` as one file with `seed`; returns `name`'s final text.
+    /// Generates `src` as the only file with `seed`; returns `name`'s
+    /// final text.
     fn value_of(src: &str, seed: &str, name: &str) -> String {
-        let file = crate::parse::parse_file(src, Path::new("test.env")).unwrap();
-        let merged = crate::merge::merge(&[file], &[]);
-        let seed = Seed::new(seed.as_bytes()).unwrap();
-        let resolved = crate::interpolate::interpolate(&merged, Some(&seed)).unwrap();
-        resolved.get(&EnvKey::new(name).unwrap()).unwrap().clone()
+        let source = crate::Source {
+            origin: Path::new("test.env"),
+            contents: src,
+        };
+        let mut generator = crate::Generator::new(&[source]).unwrap();
+        generator.seed(Seed::new(seed.as_bytes()).unwrap());
+        let out = generator.generate().unwrap();
+        let prefix = format!("{name}=");
+        let line = out.lines().find(|line| line.starts_with(&prefix)).unwrap();
+        line[prefix.len()..].to_owned()
     }
 
     #[test]
