@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [0.4.1] - 2026-11-17
+
+### Fixes
+
+- **release:** Ship static musl binaries only on Linux
+
 ## [0.4.0] - 2026-11-17
 
 ### Features
