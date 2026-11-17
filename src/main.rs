@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use clap::{ArgGroup, Args, Parser, Subcommand};
 
-use envik::{Key, Seed, Source};
+use envik::{EnvKey, Seed, Source};
 
 /// Builds `.env` files from templates, overrides and command-line values.
 #[derive(Parser)]
@@ -58,20 +58,20 @@ struct GenerateArgs {
 
     /// Seed for ${rand(n)}, read from the environment variable VAR.
     #[arg(long, value_name = "VAR", group = "seed", value_parser = parse_env_name)]
-    seed_env: Option<Key>,
+    seed_env: Option<EnvKey>,
 }
 
 /// `--seed-env` value parser, and the key of every `-e`.
-fn parse_env_name(arg: &str) -> Result<Key, String> {
-    Key::new(arg).ok_or_else(|| format!("invalid variable name `{arg}`"))
+fn parse_env_name(arg: &str) -> Result<EnvKey, String> {
+    EnvKey::new(arg).ok_or_else(|| format!("invalid variable name `{arg}`"))
 }
 
 /// One `-e`. The environment is read later, with the input files, so every
 /// missing variable is reported in one run.
 #[derive(Clone, Debug)]
 enum Override {
-    Literal(Key, String),
-    FromEnv(Key),
+    Literal(EnvKey, String),
+    FromEnv(EnvKey),
 }
 
 /// `-e` value parser: checks the key here so a bad name is a usage error
@@ -119,9 +119,9 @@ enum InputError {
     #[error("{}: {source}", path.display())]
     Read { path: PathBuf, source: io::Error },
     #[error("`{0}` is not set in the environment")]
-    EnvMissing(Key),
+    EnvMissing(EnvKey),
     #[error("`{0}` in the environment is not valid UTF-8")]
-    EnvNotUtf8(Key),
+    EnvNotUtf8(EnvKey),
     #[error("the seed is empty")]
     EmptySeed,
     #[error("could not create a seed: {0}")]
@@ -177,7 +177,7 @@ struct Inputs {
     /// One per `-i`, in the same order.
     contents: Vec<String>,
     /// One per `-e`, in the same order, `-e KEY` already looked up.
-    overrides: Vec<(Key, String)>,
+    overrides: Vec<(EnvKey, String)>,
     seed: Option<SeedInput>,
 }
 
@@ -220,7 +220,7 @@ fn read_inputs(args: &GenerateArgs) -> Result<Inputs, Vec<InputError>> {
 }
 
 /// One `-e`, with `-e KEY` looked up in the environment.
-fn read_override(item: &Override) -> Result<(Key, String), InputError> {
+fn read_override(item: &Override) -> Result<(EnvKey, String), InputError> {
     match item {
         Override::Literal(key, value) => Ok((key.clone(), value.clone())),
         Override::FromEnv(key) => Ok((key.clone(), read_env(key)?)),
@@ -228,7 +228,7 @@ fn read_override(item: &Override) -> Result<(Key, String), InputError> {
 }
 
 /// `key` from the process environment.
-fn read_env(key: &Key) -> Result<String, InputError> {
+fn read_env(key: &EnvKey) -> Result<String, InputError> {
     let Some(value) = env::var_os(key.as_str()) else {
         return Err(InputError::EnvMissing(key.clone()));
     };

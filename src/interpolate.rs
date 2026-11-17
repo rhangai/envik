@@ -4,10 +4,9 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::key::Key;
+use crate::env::{EnvCall, EnvKey, EnvValue, EnvValuePart};
 use crate::merge::Merged;
 use crate::rand::Seed;
-use crate::value::{Call, Part, Value};
 
 /// A reference that could not be expanded.
 #[derive(Debug, thiserror::Error)]
@@ -15,16 +14,16 @@ use crate::value::{Call, Part, Value};
 pub enum InterpolateError {
     /// `key`'s value references `name`, which no source sets, with no default.
     #[error("`{key}`: `${{{name}}}` is not set")]
-    Missing { key: Key, name: Key },
+    Missing { key: EnvKey, name: EnvKey },
     /// `key`'s value calls `rand`, and no seed was given.
     #[error("`{key}`: `${{rand(...)}}` needs a seed (--seed-value, --seed-file or --seed-env)")]
-    NoSeed { key: Key },
+    NoSeed { key: EnvKey },
     /// Keys that reference each other in a loop; the first is repeated last.
     #[error("circular reference: {}", Chain(.chain))]
-    Cycle { chain: Vec<Key> },
+    Cycle { chain: Vec<EnvKey> },
 }
 
-struct Chain<'a>(&'a [Key]);
+struct Chain<'a>(&'a [EnvKey]);
 
 impl fmt::Display for Chain<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -44,7 +43,7 @@ impl fmt::Display for Chain<'_> {
 /// every missing reference and every cycle, each once: a key that fails only
 /// because a key it references failed adds nothing.
 pub fn interpolate(
-    merged: &Merged<Value>,
+    merged: &Merged<EnvValue>,
     seed: Option<&Seed>,
 ) -> Result<Merged<String>, Vec<InterpolateError>> {
     let mut resolver = Resolver {
@@ -75,18 +74,18 @@ enum State {
 }
 
 struct Resolver<'a> {
-    merged: &'a Merged<Value>,
+    merged: &'a Merged<EnvValue>,
     seed: Option<&'a Seed>,
-    state: HashMap<&'a Key, State>,
+    state: HashMap<&'a EnvKey, State>,
     /// The keys being resolved, outermost first, to name a cycle's chain.
-    stack: Vec<&'a Key>,
+    stack: Vec<&'a EnvKey>,
     errors: Vec<InterpolateError>,
 }
 
 impl<'a> Resolver<'a> {
     /// `key`'s expanded value, or `None` if it, or something it references,
     /// failed. `value` is `key`'s value in `merged`.
-    fn resolve(&mut self, key: &'a Key, value: &'a Value) -> Option<String> {
+    fn resolve(&mut self, key: &'a EnvKey, value: &'a EnvValue) -> Option<String> {
         match self.state.get(key) {
             Some(State::Done(text)) => {
                 return Some(text.clone());
@@ -121,24 +120,24 @@ impl<'a> Resolver<'a> {
     /// `value`'s parts joined, with every reference expanded and every call
     /// run; `None` if any of them failed. Keeps going after a failure, so
     /// every error in the value is reported.
-    fn expand_value(&mut self, key: &'a Key, value: &'a Value) -> Option<String> {
+    fn expand_value(&mut self, key: &'a EnvKey, value: &'a EnvValue) -> Option<String> {
         let mut text = String::new();
         let mut ok = true;
         let mut calls = 0;
         let mut no_seed_reported = false;
         for part in value.parts() {
             match part {
-                Part::Literal(literal) => {
+                EnvValuePart::Literal(literal) => {
                     text.push_str(literal);
                 }
-                Part::Ref { name, default } => {
+                EnvValuePart::Ref { name, default } => {
                     let Some(expanded) = self.expand(key, name, default.as_deref()) else {
                         ok = false;
                         continue;
                     };
                     text.push_str(&expanded);
                 }
-                Part::Call(Call::Rand { len }) => {
+                EnvValuePart::EnvCall(EnvCall::Rand { len }) => {
                     let index = calls;
                     calls += 1;
                     let Some(seed) = self.seed else {
@@ -162,7 +161,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// One `${name}` or `${name:-default}` inside `key`'s value.
-    fn expand(&mut self, key: &Key, name: &'a Key, default: Option<&str>) -> Option<String> {
+    fn expand(&mut self, key: &EnvKey, name: &'a EnvKey, default: Option<&str>) -> Option<String> {
         let Some(value) = self.merged.get(name) else {
             // Unset: the default, or an error.
             if let Some(default) = default {
@@ -184,14 +183,14 @@ impl<'a> Resolver<'a> {
 
     /// `key` was met again while still being resolved: everything on the path
     /// from it is in the loop.
-    fn close_cycle(&mut self, key: &'a Key) {
+    fn close_cycle(&mut self, key: &'a EnvKey) {
         let start = self
             .stack
             .iter()
             .position(|on_path| *on_path == key)
             .expect("a key being visited is on the stack");
         let cycle = &self.stack[start..];
-        let mut chain: Vec<Key> = cycle.iter().map(|member| (*member).clone()).collect();
+        let mut chain: Vec<EnvKey> = cycle.iter().map(|member| (*member).clone()).collect();
         chain.push(key.clone());
         for member in cycle {
             self.state.insert(member, State::Failed);
@@ -209,10 +208,10 @@ mod tests {
     /// Parses `src` as one file, applies `overrides` (`-e`) and interpolates;
     /// returns every key with its final text, in order.
     fn run(src: &str, overrides: &[(&str, &str)]) -> Vec<(String, String)> {
-        let file = crate::parse::parse(src, Path::new("test.env")).unwrap();
-        let overrides: Vec<(Key, String)> = overrides
+        let file = crate::parse::parse_file(src, Path::new("test.env")).unwrap();
+        let overrides: Vec<(EnvKey, String)> = overrides
             .iter()
-            .map(|(name, text)| (Key::new(name).unwrap(), (*text).to_owned()))
+            .map(|(name, text)| (EnvKey::new(name).unwrap(), (*text).to_owned()))
             .collect();
         let merged = crate::merge::merge(&[file], &overrides);
         let resolved = interpolate(&merged, None).unwrap();

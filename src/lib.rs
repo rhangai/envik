@@ -3,22 +3,20 @@
 //! The library never touches the disk or the process environment: callers
 //! hand it file contents and values, and get the output text back.
 
+mod env;
 mod interpolate;
-mod key;
 mod merge;
 mod parse;
 mod rand;
 mod render;
-mod value;
 
 use std::fmt;
 use std::path::Path;
 
+pub use env::EnvKey;
 pub use interpolate::InterpolateError;
-pub use key::Key;
-pub use parse::{ParseError, ParseErrorKind};
+pub use parse::{ParseError, ParseErrorKind, ValueError};
 pub use rand::{Seed, new_seed_text};
-pub use value::ValueError;
 
 /// One input file: its contents, and where it came from for error messages.
 #[derive(Clone, Copy, Debug)]
@@ -56,13 +54,13 @@ fn one_per_line<T: fmt::Display>(errors: &[T]) -> String {
 /// derives from; without it, any `rand` call is an error.
 pub fn generate(
     inputs: &[Source<'_>],
-    overrides: &[(Key, String)],
+    overrides: &[(EnvKey, String)],
     seed: Option<&Seed>,
 ) -> Result<String, Error> {
     let mut files = Vec::with_capacity(inputs.len());
     let mut errors = Vec::new();
     for source in inputs {
-        match parse::parse(source.contents, source.origin) {
+        match parse::parse_file(source.contents, source.origin) {
             Ok(file) => files.push(file),
             Err(found) => errors.extend(found),
         }
@@ -72,7 +70,7 @@ pub fn generate(
     }
     let merged = merge::merge(&files, overrides);
     let resolved = interpolate::interpolate(&merged, seed).map_err(Error::Interpolate)?;
-    let empty = parse::EnvFile { lines: Vec::new() };
+    let empty = env::EnvFile { lines: Vec::new() };
     let template = files.first().unwrap_or(&empty);
     Ok(render::render(template, &resolved))
 }

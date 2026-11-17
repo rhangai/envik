@@ -1,7 +1,7 @@
 //! `${rand(n)}`: random-looking text that is the same on every run with the
 //! same seed, so regenerating a `.env` does not rotate its secrets.
 
-use crate::key::Key;
+use crate::env::EnvKey;
 
 /// The characters `rand` draws from: base64url, so the text needs no quoting
 /// and fits in a URL. Exactly 64, so each byte maps with no bias.
@@ -38,7 +38,7 @@ impl Seed {
     /// `len` characters for the `index`-th call inside `key`'s value. Depends
     /// only on the seed, `key`, `index` and `len`: other lines, and their
     /// order, never change it.
-    pub fn rand(&self, key: &Key, index: usize, len: usize) -> String {
+    pub fn rand(&self, key: &EnvKey, index: usize, len: usize) -> String {
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
         update_field(&mut hasher, key.as_str().as_bytes());
         update_field(&mut hasher, &(index as u64).to_le_bytes());
@@ -81,11 +81,11 @@ mod tests {
 
     /// Interpolates `src` as one file with `seed`; returns `name`'s final text.
     fn value_of(src: &str, seed: &str, name: &str) -> String {
-        let file = crate::parse::parse(src, Path::new("test.env")).unwrap();
+        let file = crate::parse::parse_file(src, Path::new("test.env")).unwrap();
         let merged = crate::merge::merge(&[file], &[]);
         let seed = Seed::new(seed.as_bytes()).unwrap();
         let resolved = crate::interpolate::interpolate(&merged, Some(&seed)).unwrap();
-        resolved.get(&Key::new(name).unwrap()).unwrap().clone()
+        resolved.get(&EnvKey::new(name).unwrap()).unwrap().clone()
     }
 
     #[test]
