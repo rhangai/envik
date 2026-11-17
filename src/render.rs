@@ -24,7 +24,7 @@ pub fn render(template: &EnvFile, resolved: &EnvMap<String>) -> String {
             }
             EnvFileLine::Entry(entry) => entry,
         };
-        // Merging reads the template first, so an active line is always set.
+        // Every active line of the template is a value, so it is always set.
         let Some(text) = resolved.get(&entry.key) else {
             if entry.state == EnvEntryState::Active {
                 out.push_str(&entry.raw);
@@ -93,14 +93,15 @@ fn push_with_final_value(out: &mut String, entry: &EnvEntry, final_text: &str) {
         return;
     }
     out.push_str(&entry.raw[start..entry.span.start]);
-    write_literal(final_text, out);
+    push_literal(out, final_text);
     out.push_str(&entry.raw[entry.span.end..]);
 }
 
+/// A `KEY=value` line for a key the template does not have.
 fn push_entry(out: &mut String, key: &EnvKey, text: &str) {
     out.push_str(key.as_str());
     out.push('=');
-    write_literal(text, out);
+    push_literal(out, text);
     out.push('\n');
 }
 
@@ -108,7 +109,7 @@ fn push_entry(out: &mut String, key: &EnvKey, text: &str) {
 /// literal: bare when every character is safe; otherwise in single quotes,
 /// where nothing is special; and in double quotes with escapes only when it
 /// holds a `'` or a newline, which single quotes cannot.
-fn write_literal(text: &str, out: &mut String) {
+fn push_literal(out: &mut String, text: &str) {
     if text.chars().all(is_safe_bare) {
         out.push_str(text);
     } else if !text.contains(['\'', '\n']) {
@@ -130,6 +131,7 @@ fn is_safe_bare(c: char) -> bool {
     c.is_ascii_alphanumeric() || "_-./:@%+,=?".contains(c)
 }
 
+/// `text` with what is special inside `"..."` escaped.
 fn push_escaped(out: &mut String, text: &str) {
     for c in text.chars() {
         match c {

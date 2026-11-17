@@ -661,7 +661,7 @@ fn seed_from_env() {
     assert_eq!(
         String::from_utf8(run.stderr).unwrap(),
         format!(
-            "envik: {}: No such file or directory (os error 2)\n\
+            "envik: cannot read {}: No such file or directory (os error 2)\n\
              envik: `ENVIK_SEED` is not set in the environment\n",
             path(&missing)
         ),
@@ -799,5 +799,81 @@ fn env_override_prefix_invalid() {
     );
     assert_eq!(fs::read_to_string(&out).unwrap(), original);
     assert_eq!(entries(&dir), [".env", "a.env"], "left files behind");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn optional_input_keeps_its_place() {
+    let dir = scratch("optional_input_keeps_its_place");
+    let a = dir.join("a.env");
+    let b = dir.join("b.env");
+    let c = dir.join("c.env");
+    let missing = dir.join("missing.env");
+    fs::write(&a, "K=a\n").unwrap();
+    fs::write(&b, "K=b\n").unwrap();
+    fs::write(&c, "K=c\n").unwrap();
+
+    // -I between two -i: the later -i wins over it.
+    let run = envik(&[
+        "generate",
+        "-i",
+        path(&a),
+        "-I",
+        path(&missing),
+        "-I",
+        path(&b),
+        "-i",
+        path(&c),
+    ]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "K=c\n");
+
+    // -I last: it wins over every -i before it.
+    let run = envik(&[
+        "generate",
+        "-i",
+        path(&a),
+        "-i",
+        path(&c),
+        "--input-optional",
+        path(&b),
+    ]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), "K=b\n");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn optional_input_still_fails_when_unreadable() {
+    let dir = scratch("optional_input_still_fails_when_unreadable");
+    let a = dir.join("a.env");
+    let out = dir.join(".env");
+    let not_a_file = dir.join("folder");
+    fs::write(&a, "K=a\n").unwrap();
+    fs::write(&out, "OLD=1\n").unwrap();
+    fs::create_dir(&not_a_file).unwrap();
+
+    let run = envik(&[
+        "generate",
+        "-i",
+        path(&a),
+        "-I",
+        path(&not_a_file),
+        "-o",
+        path(&out),
+    ]);
+
+    assert!(!run.status.success(), "succeeded");
+    let stderr = String::from_utf8(run.stderr).unwrap();
+    assert!(stderr.contains("folder"), "{stderr}");
+    assert_eq!(fs::read_to_string(&out).unwrap(), "OLD=1\n");
     fs::remove_dir_all(&dir).unwrap();
 }

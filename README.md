@@ -37,15 +37,18 @@ envik generate -i .env.example -i .env.override -e PORT=445 -o .env
 | Option | |
 |---|---|
 | `-i, --input <FILE>` | Input file. Repeatable, at least one. |
+| `-I, --input-optional <FILE>` | Like `-i`, but skipped when the file doesn't exist (e.g. a personal `.env.local`). It takes its place among the `-i` in the order given. Repeatable. |
 | `-e, --env <KEY[=VALUE]>` | A value, taken literally. With just `KEY`, the value comes from your environment (`-e PORT`). Repeatable. |
 | `-o, --output <FILE>` | Output file, created or overwritten. Without it, the result goes to stdout. |
 | `--env-override-prefix <PREFIX>` | Every environment variable `PREFIX` + `KEY` replaces `KEY`, if the inputs have it. See [CI secrets](#ci-secrets). |
 
-**Precedence.** The `-i` files apply in the order given, later ones winning.
-Every `-e` applies after all files and always wins, wherever it sits on the
-command line.
+**Precedence.** The `-i` and `-I` files apply in the order given, later ones
+winning.
+Every `-e` applies after all files and wins over them, wherever it sits on
+the command line. Only `--env-override-prefix` wins over `-e`.
 
-**Layout.** The first `-i` is the template: its comments, blank lines and key
+**Layout.** The first file read (`-i`, or an `-I` that exists) is the
+template: its comments, blank lines and key
 order come out unchanged, and each `KEY=value` gets its final value. Only the
 value is replaced; spacing and an inline comment (`PORT=3000  # api`) stay.
 Keys that the template does not have are appended at the end, in the order
@@ -76,10 +79,10 @@ EXTRA=2
 Anything looser is plain text and never touched: `# DEBUG` (no `=`),
 `#  DEBUG=` (two spaces), an indented `  # DEBUG=`.
 
-**Errors.** A missing input, an invalid line, an invalid `-e` or an `-e KEY`
-that is not in your environment prints an error and exits non-zero. An empty
-variable (`PORT=`) is a value, not an error. Nothing is written: an existing output file stays
-as it was.
+**Errors.** A missing `-i` file, a file that can't be read, an invalid line,
+an invalid `-e` or an `-e KEY` that is not in your environment prints an error
+and exits non-zero. An empty variable (`PORT=`) is a value, not an error.
+Nothing is written: an existing output file stays as it was.
 
 ## CI secrets
 
@@ -155,9 +158,9 @@ APP_SECRET=$(rand 32)
 `$(rand n)` writes `n` characters (1 to 1024) from `A-Z a-z 0-9 - _`. They
 look random, but they come from a seed, so running `generate` again gives the
 same secrets and nothing gets rotated by accident. The value depends only on
-the seed, the variable's name and which `rand` it is inside that value:
-adding or moving other lines never changes it. Two variables never get the
-same value, and `OTHER=${APP_SECRET}` copies it.
+the seed, the variable's name, `n` and which `rand` it is inside that value:
+adding or moving other lines never changes it. Each variable gets its own
+value, and `OTHER=${APP_SECRET}` copies it.
 
 Give the seed one way, at most:
 

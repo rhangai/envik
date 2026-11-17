@@ -137,13 +137,14 @@ pub enum GeneratorError {
     #[error("`{key}`: `${{{name}}}` is not set")]
     Missing { key: EnvKey, name: EnvKey },
     /// `key`'s value calls `rand`, and no seed was given.
-    #[error("`{key}`: `$(rand ...)` needs a seed (--seed-value, --seed-file or --seed-env)")]
+    #[error("`{key}`: `$(rand ...)` needs a seed")]
     NoSeed { key: EnvKey },
     /// Keys that reference each other in a loop; the first is repeated last.
     #[error("circular reference: {}", Chain(.chain))]
     Cycle { chain: Vec<EnvKey> },
 }
 
+/// A cycle's keys as `A → B → A`, for [`GeneratorError::Cycle`].
 struct Chain<'a>(&'a [EnvKey]);
 
 impl fmt::Display for Chain<'_> {
@@ -198,6 +199,7 @@ enum State {
 struct Resolver<'a> {
     /// Every key's value, env overrides already applied.
     values: &'a EnvMap<EnvValue>,
+    /// `None`: every `$(rand n)` is a [`GeneratorError::NoSeed`].
     seed: Option<&'a Seed>,
     /// Keys met so far; one with no entry has not been visited.
     state: HashMap<&'a EnvKey, State>,

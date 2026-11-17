@@ -22,12 +22,14 @@
 //! dollar    = "{" reference | "(" call | ""  ; a lone "$" is text
 //! reference = key "}" | key ":-" default "}"
 //! default   = { char }                    ; no "${" or "$(" inside
-//! call      = "rand" blanks digits blanks ")"   ; words, like a shell
+//! call      = blanks "rand" blanks digits blanks ")"   ; words, like a shell
 //! escape    = "n" | '"' | "\" | "$"
 //! ```
 //!
 //! A commented entry has no blanks around its key, and is text when any of it
 //! does not read: `# KEY = x` and `# A='unclosed` are prose, not errors.
+//!
+//! # Implementation
 //!
 //! [`Cursor`] walks one line, one character at a time: one method per rule
 //! above, each deciding by the next character and consuming what it reads.
@@ -150,11 +152,13 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// The next character, left unread.
     fn peek(&mut self) -> Option<char> {
         let &(_, c) = self.chars.peek()?;
         Some(c)
     }
 
+    /// Reads the next character.
     fn bump(&mut self) -> Option<char> {
         let (_, c) = self.chars.next()?;
         Some(c)
@@ -495,9 +499,12 @@ impl<'a> Cursor<'a> {
         if function != "rand" {
             return Err(ValueError::UnknownFunction(function.to_owned()));
         }
-        let (Some(len), None) = (words.next(), words.next()) else {
+        let Some(len) = words.next() else {
             return Err(invalid());
         };
+        if words.next().is_some() {
+            return Err(invalid());
+        }
         let Ok(len) = len.parse::<usize>() else {
             return Err(invalid());
         };

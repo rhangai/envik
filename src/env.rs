@@ -20,7 +20,7 @@ impl EnvKey {
     }
 
     /// Whether `name` matches `[A-Za-z_][A-Za-z0-9_]*`.
-    pub fn is_valid(name: &str) -> bool {
+    fn is_valid(name: &str) -> bool {
         let mut chars = name.chars();
         let Some(first) = chars.next() else {
             // An empty name.
@@ -33,6 +33,7 @@ impl EnvKey {
         chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 
+    /// The name as written.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -82,6 +83,7 @@ impl EnvValue {
         value
     }
 
+    /// The pieces in order; none for the empty value.
     pub fn parts(&self) -> &[EnvValuePart] {
         &self.0
     }
@@ -95,6 +97,7 @@ impl EnvValue {
         }
     }
 
+    /// Appends literal text, joining the literal before it.
     pub fn push_char(&mut self, c: char) {
         match self.0.last_mut() {
             Some(EnvValuePart::Literal(text)) => text.push(c),
@@ -102,6 +105,8 @@ impl EnvValue {
         }
     }
 
+    /// Appends literal text, joining the literal before it; nothing when
+    /// `s` is empty.
     pub fn push_str(&mut self, s: &str) {
         if s.is_empty() {
             return;
@@ -117,7 +122,7 @@ impl EnvValue {
         self.0.push(EnvValuePart::Ref { name, default });
     }
 
-    /// Appends `${function(args)}`.
+    /// Appends `$(name args)`.
     pub fn push_call(&mut self, call: EnvCall) {
         self.0.push(EnvValuePart::Call(call));
     }
@@ -159,6 +164,7 @@ impl EnvFile {
 pub enum EnvFileLine {
     /// Blank line or comment: written back untouched.
     Text(String),
+    /// An active or commented `KEY=value` line.
     Entry(EnvEntry),
 }
 
@@ -166,18 +172,21 @@ pub enum EnvFileLine {
 #[derive(Debug, PartialEq, Eq)]
 pub struct EnvEntry {
     pub key: EnvKey,
+    /// As parsed: quotes and escapes resolved, references not expanded.
     pub value: EnvValue,
     /// The whole line, `#` and line ending included.
     pub raw: String,
     /// Where the value sits in `raw`, quotes included, so it can be replaced
     /// without disturbing spacing or an inline comment.
     pub span: Range<usize>,
+    /// Active, or commented and so only offered.
     pub state: EnvEntryState,
 }
 
 /// Whether an entry is set, or offered as an optional variable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvEntryState {
+    /// `KEY=value`: a value, always written.
     Active,
     /// `#KEY=value` or `# KEY=value`. Whether it is turned on, kept or
     /// dropped is decided by [`render`](crate::render::render).
