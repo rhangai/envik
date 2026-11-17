@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [0.2.0] - 2026-11-17
+
+### Features
+
+- **generate:** Separate keys missing from the template with a # ---- line
+
 ## [0.1.1] - 2026-11-17
 
 ### Fixes
