@@ -188,12 +188,13 @@ The output has every reference expanded. A template line that holds no
 reference and keeps its value comes out exactly as it was. Any other value is
 written:
 
-- bare, when it only has letters, digits and `_-./:@%+,=`;
+- bare, when it only has letters, digits and `_-./:@%+,=?`;
 - in single quotes when it needs quoting: `'a b'`, `'$5'`;
 - in double quotes with escapes when it holds a `'` or a newline:
   `"it's"`, `"a\nb"`.
 
-Reading the output back gives the same values.
+Reading the output back gives the same values, and the output always ends
+with a newline.
 
 ## Releasing
 
