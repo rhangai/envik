@@ -44,7 +44,7 @@ struct GenerateArgs {
 
     /// Seed for ${rand(n)}, given here. It stays in your shell history: use
     /// it locally.
-    #[arg(long, value_name = "TEXT", group = "seed")]
+    #[arg(long, value_name = "TEXT", group = "seed", allow_hyphen_values = true)]
     seed_value: Option<String>,
 
     /// Seed for ${rand(n)}, read from FILE. Keep the file out of git.

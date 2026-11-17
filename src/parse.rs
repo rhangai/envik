@@ -5,8 +5,10 @@
 //! # Grammar
 //!
 //! ```text
-//! line      = entry | "#" [" "] entry | text
-//! entry     = blanks key blanks "=" blanks value
+//! line      = "#" [" "] key "=" value      ; a commented entry, else text
+//!           | blanks [ "#" comment ]        ; text
+//!           | blanks key blanks "=" value
+//! key       = [A-Za-z_] { [A-Za-z0-9_] }
 //! value     = '"' double '"' after_quote
 //!           | "'" single "'" after_quote
 //!           | unquoted
@@ -14,20 +16,23 @@
 //! single    = { char }                    ; everything literal
 //! unquoted  = { "${" reference "}" | char }
 //!                                         ; up to a "#" after a blank, or the
-//!                                         ; end; trailing blanks dropped
+//!                                         ; end; trailing blanks dropped. A
+//!                                         ; "#" inside "${...}" is text
 //! after_quote = [ blank { blank } [ "#" comment ] ]
 //! reference = key [ ":-" default ] | "rand(" digits ")"
 //! escape    = "n" | '"' | "\" | "$"
 //! ```
 //!
-//! A commented `#KEY=` line is an entry only when the name touches the `#` (or
-//! `# `) and the `=`, and the whole entry reads; otherwise it is text.
+//! A commented entry has no blanks around its key, and is text when any of it
+//! does not read: `# KEY = x` and `# A='unclosed` are prose, not errors.
 //!
-//! [`Cursor`] walks one line, holding the only position: one method per rule
-//! above, each reading from `pos` and moving it forward.
+//! [`Cursor`] walks one line, one character at a time: one method per rule
+//! above, each deciding by the next character and consuming what it reads.
 
+use std::iter::Peekable;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::str::CharIndices;
 
 use crate::env::{
     EnvCall, EnvEntry, EnvEntryState, EnvFile, EnvFileLine, EnvKey, EnvValue, MAX_RAND_LEN,
@@ -57,78 +62,6 @@ pub enum ParseErrorKind {
     Value(#[from] ValueError),
 }
 
-/// Parses `src`; `origin` only labels errors. On failure, returns every
-/// invalid line, not just the first, so one run reports them all.
-pub fn parse_file(src: &str, origin: &Path) -> Result<EnvFile, Vec<ParseError>> {
-    let mut lines = Vec::new();
-    let mut errors = Vec::new();
-    for (index, raw) in src.split_inclusive('\n').enumerate() {
-        match parse_line(raw) {
-            Ok(line) => lines.push(line),
-            Err(kind) => errors.push(ParseError {
-                origin: origin.to_owned(),
-                line: index + 1,
-                kind,
-            }),
-        }
-    }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    Ok(EnvFile { lines })
-}
-
-/// One line, its line ending included: text, or an active or commented
-/// entry.
-pub fn parse_line(raw: &str) -> Result<EnvFileLine, ParseErrorKind> {
-    let trimmed = raw.trim_start();
-    let is_text = trimmed.is_empty() || trimmed.starts_with('#');
-    if !is_text {
-        let entry = parse_entry(raw, EnvEntryState::Active)?;
-        return Ok(EnvFileLine::Entry(entry));
-    }
-    let Some(entry) = commented_entry(raw) else {
-        return Ok(EnvFileLine::Text(raw.to_owned()));
-    };
-    Ok(EnvFileLine::Entry(entry))
-}
-
-/// `#KEY=...` or `# KEY=...`, when it reads as an entry.
-fn commented_entry(raw: &str) -> Option<EnvEntry> {
-    let after_hash = raw.strip_prefix('#')?;
-    let state = EnvEntryState::Commented {
-        space_after_hash: after_hash.starts_with(' '),
-    };
-    // The name must touch the prefix and the `=`: `#  KEY=` and `# KEY =`
-    // are prose.
-    let (name, _) = raw[state.prefix().len()..].split_once('=')?;
-    if !EnvKey::is_valid(name) {
-        return None;
-    }
-    // A value that does not read makes it prose too, not an error.
-    let Ok(entry) = parse_entry(raw, state) else {
-        return None;
-    };
-    Some(entry)
-}
-
-/// `raw` as an entry, after `state`'s prefix.
-fn parse_entry(raw: &str, state: EnvEntryState) -> Result<EnvEntry, ParseErrorKind> {
-    let line = raw.trim_end_matches(['\n', '\r']);
-    let mut cursor = Cursor {
-        line,
-        pos: state.prefix().len(),
-    };
-    let (key, value, span) = cursor.entry()?;
-    Ok(EnvEntry {
-        key,
-        value,
-        raw: raw.to_owned(),
-        span,
-        state,
-    })
-}
-
 /// Why a value could not be read.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -153,90 +86,182 @@ pub enum ValueError {
     DefaultOnCall(String),
 }
 
-/// A position in one line, line ending excluded. Each grammar rule is a
-/// method that reads from `pos` and leaves it just after what it read.
-struct Cursor<'a> {
-    line: &'a str,
-    /// A byte offset into `line`, so a span is `start..pos`.
-    pos: usize,
+/// Parses `src`; `origin` only labels errors. On failure, returns every
+/// invalid line, not just the first, so one run reports them all.
+pub fn parse_file(src: &str, origin: &Path) -> Result<EnvFile, Vec<ParseError>> {
+    let mut lines = Vec::new();
+    let mut errors = Vec::new();
+    for (index, raw) in src.split_inclusive('\n').enumerate() {
+        match parse_line(raw) {
+            Ok(line) => lines.push(line),
+            Err(kind) => errors.push(ParseError {
+                origin: origin.to_owned(),
+                line: index + 1,
+                kind,
+            }),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(EnvFile { lines })
 }
 
-impl Cursor<'_> {
-    /// What is left of the line.
-    fn rest(&self) -> &str {
-        &self.line[self.pos..]
+/// One line, its line ending included: text, or an active or commented
+/// entry.
+pub fn parse_line(raw: &str) -> Result<EnvFileLine, ParseErrorKind> {
+    let Some(entry) = Cursor::new(raw).line()? else {
+        return Ok(EnvFileLine::Text(raw.to_owned()));
+    };
+    Ok(EnvFileLine::Entry(entry))
+}
+
+/// A position in one line. Each grammar rule is a method that reads from the
+/// next character and leaves the cursor just after what it read. A rule that
+/// ends the line (`line`, `entry`, `value`, `unquoted`, `after_quote`) takes
+/// the cursor by value, so nothing can read past it.
+struct Cursor<'a> {
+    /// The line as read, line ending included.
+    raw: &'a str,
+    /// `raw` without its line ending: what the rules read.
+    line: &'a str,
+    /// What is left of `line`, each character with its byte offset.
+    chars: Peekable<CharIndices<'a>>,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(raw: &'a str) -> Self {
+        let line = raw.trim_end_matches(['\n', '\r']);
+        Cursor {
+            raw,
+            line,
+            chars: line.char_indices().peekable(),
+        }
     }
 
-    fn peek(&self) -> Option<char> {
-        self.rest().chars().next()
+    /// The byte offset of the next character, so a span is `start..pos()`.
+    fn pos(&mut self) -> usize {
+        match self.chars.peek() {
+            Some(&(offset, _)) => offset,
+            None => self.line.len(),
+        }
     }
 
-    fn bump(&mut self) -> Option<char> {
-        let c = self.peek()?;
-        self.pos += c.len_utf8();
+    fn peek(&mut self) -> Option<char> {
+        let &(_, c) = self.chars.peek()?;
         Some(c)
     }
 
-    /// Consumes `text` if the line continues with it.
-    fn eat(&mut self, text: &str) -> bool {
-        if !self.rest().starts_with(text) {
-            return false;
-        }
-        self.pos += text.len();
-        true
+    fn bump(&mut self) -> Option<char> {
+        let (_, c) = self.chars.next()?;
+        Some(c)
     }
 
-    fn skip_blanks(&mut self) {
-        while self.peek().is_some_and(char::is_whitespace) {
-            self.bump();
-        }
+    /// Consumes the next character if it is `c`.
+    fn eat(&mut self, c: char) -> bool {
+        self.chars.next_if(|&(_, next)| next == c).is_some()
     }
 
-    /// `key = value`: the key with the value and where it sits in the line.
-    fn entry(&mut self) -> Result<(EnvKey, EnvValue, Range<usize>), ParseErrorKind> {
-        let Some(eq) = self.rest().find('=') else {
-            return Err(ParseErrorKind::MissingEquals(self.rest().to_owned()));
-        };
-        let name = self.rest()[..eq].trim();
-        let Some(key) = EnvKey::new(name) else {
-            return Err(ParseErrorKind::InvalidKey(name.to_owned()));
-        };
-        self.pos += eq + 1;
-        let after_eq = self.pos;
+    /// Skips blanks; whether there were any.
+    fn skip_blanks(&mut self) -> bool {
+        let mut skipped = false;
+        while self.chars.next_if(|&(_, c)| c.is_whitespace()).is_some() {
+            skipped = true;
+        }
+        skipped
+    }
+
+    /// The line as an entry, or `None` when it is text.
+    fn line(mut self) -> Result<Option<EnvEntry>, ParseErrorKind> {
+        if self.eat('#') {
+            let state = EnvEntryState::Commented {
+                space_after_hash: self.eat(' '),
+            };
+            // A commented entry that does not read is prose, not an error.
+            let Ok(entry) = self.entry(state) else {
+                return Ok(None);
+            };
+            return Ok(Some(entry));
+        }
         self.skip_blanks();
-        let start = self.pos;
-        let value = self.value()?;
-        // An empty value sits right after `=`, so a new one written there is
-        // not glued to a `#`.
-        let span = if self.pos == start {
-            after_eq..after_eq
-        } else {
-            start..self.pos
-        };
-        Ok((key, value, span))
+        if matches!(self.peek(), None | Some('#')) {
+            return Ok(None);
+        }
+        Ok(Some(self.entry(EnvEntryState::Active)?))
     }
 
-    /// A value, quoted or not. A quoted one ends at its closing quote.
-    fn value(&mut self) -> Result<EnvValue, ValueError> {
-        let value = if self.eat("\"") {
-            self.double_quoted()?
-        } else if self.eat("'") {
-            self.single_quoted()?
-        } else {
-            return self.unquoted();
+    /// `key = value`, after `state`'s prefix and, for an active entry, its
+    /// leading blanks. Only an active entry allows blanks around its key.
+    fn entry(mut self, state: EnvEntryState) -> Result<EnvEntry, ParseErrorKind> {
+        let Some(key) = self.key() else {
+            return Err(self.entry_error(state));
         };
+        if state == EnvEntryState::Active {
+            self.skip_blanks();
+        }
+        if !self.eat('=') {
+            return Err(self.entry_error(state));
+        }
+        let raw = self.raw.to_owned();
+        let (value, span) = self.value()?;
+        Ok(EnvEntry {
+            key,
+            value,
+            raw,
+            span,
+            state,
+        })
+    }
+
+    /// `[A-Za-z_][A-Za-z0-9_]*`, or `None` when what is here is not one.
+    fn key(&mut self) -> Option<EnvKey> {
+        let start = self.pos();
+        while self
+            .chars
+            .next_if(|&(_, c)| c.is_ascii_alphanumeric() || c == '_')
+            .is_some()
+        {}
+        let end = self.pos();
+        EnvKey::new(&self.line[start..end])
+    }
+
+    /// Why the line does not start with `KEY=`, quoting what it has instead.
+    fn entry_error(&self, state: EnvEntryState) -> ParseErrorKind {
+        let content = &self.line[state.prefix().len()..];
+        let Some((name, _)) = content.split_once('=') else {
+            return ParseErrorKind::MissingEquals(content.to_owned());
+        };
+        ParseErrorKind::InvalidKey(name.trim().to_owned())
+    }
+
+    /// Everything after `=`: the value and where it sits in the line, quotes
+    /// included.
+    fn value(mut self) -> Result<(EnvValue, Range<usize>), ValueError> {
+        let after_eq = self.pos();
+        let blank = self.skip_blanks();
+        let start = self.pos();
+        let value = match self.peek() {
+            Some('"') => {
+                self.bump();
+                self.double_quoted()?
+            }
+            Some('\'') => {
+                self.bump();
+                self.single_quoted()?
+            }
+            _ => {
+                return self.unquoted(after_eq, blank);
+            }
+        };
+        let span = start..self.pos();
         self.after_quote()?;
-        Ok(value)
+        Ok((value, span))
     }
 
     /// `"..."`: escapes and references. The opening `"` is already read.
     fn double_quoted(&mut self) -> Result<EnvValue, ValueError> {
         let mut value = EnvValue::default();
         loop {
-            if self.eat("${") {
-                self.reference(&mut value, true)?;
-                continue;
-            }
             match self.bump() {
                 None => {
                     return Err(ValueError::UnclosedQuote);
@@ -247,6 +272,13 @@ impl Cursor<'_> {
                 Some('\\') => {
                     value.push_char(self.escape()?);
                 }
+                Some('$') => {
+                    if self.eat('{') {
+                        self.reference(&mut value, true)?;
+                    } else {
+                        value.push_char('$');
+                    }
+                }
                 Some(c) => {
                     value.push_char(c);
                 }
@@ -256,61 +288,82 @@ impl Cursor<'_> {
 
     /// `'...'`: everything literal. The opening `'` is already read.
     fn single_quoted(&mut self) -> Result<EnvValue, ValueError> {
-        let Some(close) = self.rest().find('\'') else {
-            return Err(ValueError::UnclosedQuote);
-        };
-        let value = EnvValue::literal(self.rest()[..close].to_owned());
-        self.pos += close + 1;
-        Ok(value)
+        let start = self.pos();
+        loop {
+            match self.bump() {
+                None => {
+                    return Err(ValueError::UnclosedQuote);
+                }
+                Some('\'') => {
+                    break;
+                }
+                Some(_) => {}
+            }
+        }
+        // The closing quote is one byte.
+        let end = self.pos() - 1;
+        Ok(EnvValue::literal(self.line[start..end].to_owned()))
     }
 
     /// After a closing quote only blanks may follow, or blanks and a comment.
-    fn after_quote(&self) -> Result<(), ValueError> {
-        let rest = self.rest();
-        let trimmed = rest.trim_start();
-        let blank_before = trimmed.len() < rest.len();
-        if trimmed.is_empty() || (blank_before && trimmed.starts_with('#')) {
-            return Ok(());
+    fn after_quote(mut self) -> Result<(), ValueError> {
+        let blank = self.skip_blanks();
+        match self.peek() {
+            None => Ok(()),
+            Some('#') if blank => Ok(()),
+            Some(_) => {
+                let rest = &self.line[self.pos()..];
+                Err(ValueError::TextAfterQuote(rest.to_owned()))
+            }
         }
-        Err(ValueError::TextAfterQuote(trimmed.to_owned()))
     }
 
-    /// Unquoted: literal text and references, no escapes.
-    fn unquoted(&mut self) -> Result<EnvValue, ValueError> {
-        let end = self.unquoted_end();
-        // Only up to `end`: what follows is a comment or trailing blanks.
-        let mut text = Cursor {
-            line: &self.line[..end],
-            pos: self.pos,
-        };
+    /// Unquoted: literal text and references, no escapes. The blanks after
+    /// `=` (`after_eq`) are already skipped, and `blank` says whether there
+    /// were any. Blanks around the value are not part of it, and a `#` after
+    /// a blank starts a comment. An empty value sits right after `=`, so one
+    /// written there later is not glued to a `#`.
+    fn unquoted(
+        mut self,
+        after_eq: usize,
+        blank: bool,
+    ) -> Result<(EnvValue, Range<usize>), ValueError> {
         let mut value = EnvValue::default();
-        loop {
-            if text.eat("${") {
-                text.reference(&mut value, false)?;
+        let mut span = after_eq..after_eq;
+        let mut after_blank = blank;
+        while let Some(c) = self.peek() {
+            if c == '#' && after_blank {
+                break;
+            }
+            let at = self.pos();
+            self.bump();
+            after_blank = c.is_whitespace();
+            if after_blank {
                 continue;
             }
-            let Some(c) = text.bump() else {
-                break;
-            };
-            value.push_char(c);
-        }
-        self.pos = end;
-        Ok(value)
-    }
-
-    /// Where an unquoted value starting at `pos` ends: before a `#` that
-    /// follows a blank, or at the end of the line, trailing blanks dropped.
-    fn unquoted_end(&self) -> usize {
-        let mut previous_blank = self.line[..self.pos].ends_with(char::is_whitespace);
-        let mut end = self.line.len();
-        for (index, c) in self.rest().char_indices() {
-            if c == '#' && previous_blank {
-                end = self.pos + index;
-                break;
+            // More of the value follows, so the blanks since its last
+            // character are inside it; before its first one they are not.
+            if !span.is_empty() {
+                value.push_str(&self.line[span.end..at]);
             }
-            previous_blank = c.is_whitespace();
+            match c {
+                '$' => {
+                    if self.eat('{') {
+                        self.reference(&mut value, false)?;
+                    } else {
+                        value.push_char('$');
+                    }
+                }
+                _ => {
+                    value.push_char(c);
+                }
+            }
+            if span.is_empty() {
+                span.start = at;
+            }
+            span.end = self.pos();
         }
-        self.pos + self.line[self.pos..end].trim_end().len()
+        Ok((value, span))
     }
 
     /// `\n`, `\"`, `\\` or `\$`. The `\` is already read.
@@ -350,15 +403,28 @@ impl Cursor<'_> {
     fn reference_body(&mut self, quoted: bool) -> Result<String, ValueError> {
         let mut body = String::new();
         loop {
-            if self.rest().starts_with("${") {
-                return Err(ValueError::NestedRef);
-            }
             match self.bump() {
-                None => return Err(ValueError::UnclosedRef),
-                Some('}') => return Ok(body),
-                Some('"') if quoted => return Err(ValueError::UnclosedRef),
-                Some('\\') if quoted => body.push(self.escape()?),
-                Some(c) => body.push(c),
+                None => {
+                    return Err(ValueError::UnclosedRef);
+                }
+                Some('}') => {
+                    return Ok(body);
+                }
+                Some('"') if quoted => {
+                    return Err(ValueError::UnclosedRef);
+                }
+                Some('\\') if quoted => {
+                    body.push(self.escape()?);
+                }
+                Some('$') => {
+                    if self.eat('{') {
+                        return Err(ValueError::NestedRef);
+                    }
+                    body.push('$');
+                }
+                Some(c) => {
+                    body.push(c);
+                }
             }
         }
     }
@@ -415,9 +481,7 @@ mod tests {
 
     /// Reads `text` as what follows `=`.
     fn read_value(text: &str) -> Result<EnvValue, ValueError> {
-        let mut cursor = Cursor { line: text, pos: 0 };
-        cursor.skip_blanks();
-        cursor.value()
+        Ok(Cursor::new(text).value()?.0)
     }
 
     const ACTIVE: EnvEntryState = EnvEntryState::Active;
@@ -524,6 +588,11 @@ mod tests {
         url.push_ref(key("PORT"), None);
         assert_eq!(value("http://${HOST:-localhost}:${PORT}"), url);
 
+        // A `#` inside `${...}` is text, not a comment.
+        let mut spaced = EnvValue::default();
+        spaced.push_ref(key("X"), Some("a #b".to_owned()));
+        assert_eq!(value("${X:-a #b}"), spaced);
+
         let mut secret = EnvValue::default();
         secret.push_call(EnvCall::Rand { len: 32 });
         assert_eq!(value("${rand(32)}"), secret);
@@ -541,6 +610,8 @@ mod tests {
             ("a\t#b", "a"),
             ("", ""),
             ("a ## b", "a"),
+            ("  value# # comment", "value#"),
+            ("a \t b  ", "a \t b"),
             // `$` without braces is literal.
             ("$VAR", "$VAR"),
             ("a$VAR}b", "a$VAR}b"),
