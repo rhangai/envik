@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here.
 
+## [0.4.0] - 2026-11-17
+
+### Features
+
+- **generate:** Add -I for input files that may not exist
+
+### Fixes
+
+- **generate:** Write -o in place so symlinks, owner and permissions stay
+
+### Refactor
+
+- **generate:** Document InputError and rename Read to FileRead
+- **cli:** Split the command line into cli, cli/generate and util modules
+- **generate:** Apply the maintainability review across the crate
+
+### Docs
+
+- Fix stale and wrong claims in the README and code docs
+
 ## [0.3.1] - 2026-11-17
 
 ### Fixes

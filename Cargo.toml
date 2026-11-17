@@ -1,6 +1,6 @@
 [package]
 name = "envik"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "Builds .env files from templates, overrides and command-line values."
 repository = "https://github.com/rhangai/envik"
